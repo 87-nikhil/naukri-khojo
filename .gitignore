@@ -1,0 +1,9 @@
+node_modules/
+.env
+uploads/
+.vercel
+*.pdf
+config.json
+.automation/
+*.docx
+.DS_Store

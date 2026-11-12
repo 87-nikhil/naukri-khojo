@@ -1,0 +1,112 @@
+const store = require('./store');
+const { discover } = require('./discovery');
+const { evaluate, selectNext, repeatReason, APPLIED, ageDays, MAX_AGE_DAYS } = require('./matching');
+const browser = require('./browser');
+let running = false;
+function profile() { const p = store.read('profile', null); if (!p) throw new Error('Initialize your candidate profile first'); return p; }
+function recover() { store.mutate(s => { for (const j of s.jobs) { if (['submitting', 'filling'].includes(j.status)) { j.status = 'submission_uncertain'; j.reason = 'Worker stopped during an attempt. Verify before retrying.'; } } for (const r of s.runs) if (r.status === 'running') { r.status = 'interrupted'; r.finishedAt = new Date().toISOString(); } }); }
+function todays(s) { const day = store.indiaDay(); return s.jobs.filter(j => j.status === 'submitted' && j.submittedAt && store.indiaDay(new Date(j.submittedAt)) === day); }
+// LinkedIn flagged the account for automated activity, so the worker neither searches nor applies there.
+function linkedinOff() { return (store.state().settings.skipAts || []).includes('linkedin'); }
+function resumeResolvedBlocks(s, p) {
+  const { resolve } = require('./answers');
+  for (const j of s.jobs) {
+    if (j.status !== 'needs_input' || !j.match?.eligible || j.requiresVerification) continue;
+    // A Workday account wall clears once credentials exist; retry it once per day rather than never.
+    if (j.requiresLogin) { if (j.ats === 'workday' && process.env.WORKDAY_PASSWORD && j.loginRetryDay !== store.indiaDay()) { j.status = 'queued'; j.requiresLogin = false; j.loginRetryDay = store.indiaDay(); j.reason = 'Retrying Workday with saved candidate credentials'; } continue; }
+    const questions = j.questions || [];
+    const answered = questions.length && questions.every(q => resolve(q, p, s.answers, q.origin, j));
+    // Only migrate the old unsupported-connector block. Never retry an uncertain submission.
+    const upgraded = (j.ats === 'workday' && /^This portal needs a dedicated application connector\.|^Workday step needs manual attention|^Workday page did not render/.test(j.reason || '') && j.connectorRetryVersion !== 'workday-v2') ||
+      (j.ats === 'linkedin' && /locator\.check|did not advance after Next|resume upload has not been verified/i.test(j.reason || '') && j.connectorRetryVersion !== 'linkedin-v2');
+    if (answered || upgraded) {
+      j.status = 'queued';
+      j.reason = answered ? 'Previously missing answers are now available' : `Retrying with the updated ${j.ats === 'workday' ? 'Workday' : 'LinkedIn'} connector`;
+      if (upgraded) j.connectorRetryVersion = `${j.ats}-v2`;
+    }
+  }
+}
+async function run({ discovery = true, apply = true, dryRun = false, jobId, verificationCode } = {}) {
+  if (running) throw new Error('A run is already active');
+  const release = store.acquireLock(); running = true;
+  const id = `${Date.now()}`;
+  try {
+    recover();
+    const p = profile();
+    store.mutate(s => { s.runs.unshift({ id, startedAt: new Date().toISOString(), status: 'running', dryRun, target: s.settings.dailyTarget }); });
+    store.event(dryRun ? 'Started form validation without submission' : 'Started daily run');
+    const prepare = () => {
+      // Retry email-only blocks once per day after the local mailbox authenticates.
+      if (require('./email').status().connected) store.mutate(s => {
+        for (const j of s.jobs) if (j.status === 'needs_input' && j.requiresEmailCode && j.emailAutoRetryDay !== store.indiaDay() && !(j.questions || []).length) {
+          j.status = 'queued'; j.emailAutoRetryDay = store.indiaDay(); j.reason = 'Retrying email verification with authenticated local Gmail';
+        }
+      });
+      // Re-evaluate previously queued jobs after rule changes, without losing application history.
+      store.mutate(s => { for (const j of s.jobs) if (['queued', 'ready', 'excluded', 'needs_input'].includes(j.status)) { j.match = evaluate(j, { ...p, excludedCompanies: [...p.excludedCompanies, ...s.excludedCompanies] }); if (!j.match.eligible) { j.status = 'excluded'; j.reason = j.match.blocked.join('; '); } else if (j.status !== 'needs_input') j.status = 'queued'; } });
+      store.mutate(s => resumeResolvedBlocks(s, p));
+      // Company limit and reposts: park queued jobs that would be a third application or a repeat of an applied role.
+      store.mutate(s => { const history = s.jobs.filter(j => APPLIED.includes(j.status)); for (const j of s.jobs) if (j.status === 'queued') { const why = repeatReason(j, history); if (why) { j.status = 'excluded'; j.reason = why; } } });
+      // Stale postings are handled by the one-week posting-age rule in evaluate(), the same for every source.
+      // Descriptions of skipped postings past the age limit can never be needed again; dropping them keeps state.json (and the dashboard) fast.
+      store.mutate(s => { for (const j of s.jobs) if (['excluded', 'archived'].includes(j.status) && j.description && ageDays(j) > MAX_AGE_DAYS + 1) { delete j.description; j.descriptionTrimmed = true; } });
+    };
+    const applyQueue = async () => {
+      let attempts = 0;
+      while (attempts < 80) {
+        const s = store.state();
+        if (s.settings.paused || !s.settings.autoApply || (!dryRun && todays(s).length >= s.settings.dailyTarget)) break;
+        const next = selectNext(jobId ? s.jobs.filter(j => j.id === jobId) : s.jobs, todays(s), { ...p, excludedCompanies: [...p.excludedCompanies, ...s.excludedCompanies] });
+        if (!next) break;
+        next.match = evaluate(next, p);
+        store.mutate(value => { const j = value.jobs.find(j => j.id === next.id); j.status = 'filling'; j.attempts.push({ at: new Date().toISOString(), dryRun }); });
+        store.event(`Checking application: ${next.company} — ${next.title}`);
+        let result;
+        // A network blip or page crash affects one job, not the whole run.
+        try { result = await browser.apply(next, p, s.answers, { dryRun, verificationCode }); }
+        catch (error) {
+          const offline = /ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ERR_CONNECTION|Timeout \d+ms exceeded/i.test(error.message);
+          result = offline ? { status: 'queued', reason: `Network problem; will retry: ${error.message.split('\n')[0].slice(0, 120)}`, networkRetries: (next.networkRetries || 0) + 1 } : { status: 'needs_input', reason: error.message.split('\n')[0].slice(0, 200), questions: [] };
+          if (offline && result.networkRetries > 2) result = { status: 'needs_input', reason: result.reason, questions: [] };
+          if (offline) { await new Promise(r => setTimeout(r, 20000)); }
+        }
+        store.mutate(value => {
+          Object.assign(value.jobs.find(j => j.id === next.id), result);
+          // One account wall per Workday tenant: park that tenant's other queued jobs instead of hitting it again.
+          if (result.requiresLogin && result.loginHost) for (const j of value.jobs) if (j.id !== next.id && j.status === 'queued' && /^https?:/.test(j.applyLink || '') && new URL(j.applyLink).hostname === result.loginHost) Object.assign(j, { status: 'needs_input', reason: result.reason, requiresLogin: true, loginHost: result.loginHost, questions: [] });
+          if (result.requiresVerification) for (const j of value.jobs) if (j.company === next.company && j.status === 'queued') { j.status = 'needs_input'; j.reason = 'Company application portal needs manual verification before automatic applications can continue'; j.requiresVerification = true; j.questions = []; }
+        });
+        require('./reports').save();
+        store.event(`${next.company}: ${result.status}${result.reason ? ` — ${result.reason}` : ''}`);
+        attempts++;
+        if (dryRun || jobId) break;
+      }
+    };
+    // Apply to what is already queued before the slow discovery sweep, then apply to what discovery finds.
+    prepare();
+    // In the quiet hours, search Naukri first so today's fresh postings are applied to before older leftovers.
+    const quiet = require('./browser').quietHours();
+    if (quiet && !dryRun) await require('./naukri').syncResume(p);
+    if (discovery && quiet) await require('./naukri').discover(p, store.event).catch(e => store.event(`Naukri discovery failed: ${e.message.split('\n')[0]}`));
+    if (discovery && quiet) prepare();
+    if (apply && discovery) await applyQueue();
+    // Naukri needs a real (off-screen) window, so it is searched only inside the quiet hours.
+    // LinkedIn job-alert emails: matched to employer boards (read from Gmail only; LinkedIn itself is never contacted).
+    if (discovery && require('./email').status().connected) await require('./linkedinAlerts').scan(p, store.event).catch(e => store.event(`LinkedIn alerts failed: ${e.message.split('\n')[0]}`));
+    if (discovery) await require('./wellfound').discover(p, store.event).catch(e => store.event(`Wellfound discovery failed: ${e.message.split('\n')[0]}`));
+    // The full company-board sweep takes hours; run it once per day and never inside the night window, so night runs stay short and Naukri is searched at every slot.
+    const sweepDue = discovery && !quiet && store.state().settings.lastCompanySweep !== store.indiaDay();
+    if (sweepDue) { await discover(p, store.event); store.mutate(s => { s.settings.lastCompanySweep = store.indiaDay(); }); }
+    if (discovery) { if (!linkedinOff() && store.read('platform-status', []).some(s => s.name === 'LinkedIn' && s.status === 'authenticated')) await require('./linkedin').discover(p, store.event); }
+    if (discovery) prepare();
+    if (apply) await applyQueue();
+    if (!dryRun && require('./email').status().connected) await require('./inbox').scan().catch(() => {});
+    const s = store.state(), confirmed = todays(s).length;
+    const summary = { finishedAt: new Date().toISOString(), status: 'complete', confirmedToday: confirmed, target: s.settings.dailyTarget, shortfall: Math.max(0, s.settings.dailyTarget - confirmed), queued: s.jobs.filter(j => j.status === 'queued').length, needsInput: s.jobs.filter(j => j.status === 'needs_input').length, uncertain: s.jobs.filter(j => j.status === 'submission_uncertain').length };
+    store.mutate(value => { Object.assign(value.runs.find(r => r.id === id), summary); value.runs = value.runs.slice(0, 90); });
+    store.event(`Daily result: ${confirmed}/${summary.target} confirmed submissions; ${summary.needsInput} need input`);
+    return summary;
+  } catch (error) { store.mutate(s => { const r = s.runs.find(r => r.id === id); if (r) Object.assign(r, { status: 'failed', error: error.message, finishedAt: new Date().toISOString() }); }); store.event(`Run failed: ${error.message}`); throw error; }
+  finally { try { require('./reports').save(); } finally { running = false; release(); } }
+}
+module.exports = { run, profile, recover, todays, resumeResolvedBlocks, isRunning: () => running };
