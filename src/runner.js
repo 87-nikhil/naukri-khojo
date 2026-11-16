@@ -40,7 +40,7 @@ async function connectDB() {
     console.log('✅ MongoDB already connected');
     return;
   }
-  await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/jobhunter');
+  await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo', { serverSelectionTimeoutMS: 8000 });
   console.log('✅ MongoDB connected');
 }
 
@@ -80,7 +80,7 @@ async function runJobHunt(userId, isAdmin = false) {
   updateStatus('starting', 0, 'Job hunt started');
 
   console.log('\n╔══════════════════════════════════════╗');
-  console.log('║     🔥 JobHunter Pro — Daily Run      ║');
+  console.log('║     🔥 Naukri Khojo — Daily Run      ║');
   console.log(`║     ${new Date().toLocaleDateString('en-IN')} ${new Date().toLocaleTimeString('en-IN')}       ║`);
   console.log('╚══════════════════════════════════════╝\n');
 

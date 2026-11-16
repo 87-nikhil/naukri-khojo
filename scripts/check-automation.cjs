@@ -121,7 +121,7 @@ const root = `http://127.0.0.1:${process.env.AUTOMATION_PORT || 4129}`;
       assert.equal(health.running, false, 'Wait for the current worker run');
       const result = await page.evaluate(async () => {
         async function post(url, method, body) {
-          const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-JobHunter-Token': TOKEN }, body: JSON.stringify(body) });
+          const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Naukri-Khojo-Token': TOKEN }, body: JSON.stringify(body) });
           if (!response.ok) throw Error((await response.json()).error || 'Local action failed');
         }
         await post('/api/settings', 'PATCH', { dailyTarget: 15 });
@@ -159,7 +159,7 @@ const root = `http://127.0.0.1:${process.env.AUTOMATION_PORT || 4129}`;
       const index = process.argv.indexOf('--job');
       const jobId = index >= 0 ? process.argv[index + 1] : undefined;
       const result = await page.evaluate(async jobId => {
-        const response = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-JobHunter-Token': TOKEN }, body: JSON.stringify({ mode: 'apply', jobId }) });
+        const response = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Naukri-Khojo-Token': TOKEN }, body: JSON.stringify({ mode: 'apply', jobId }) });
         return { status: response.status, body: await response.json() };
       }, jobId);
       assert.equal(result.status, 200); console.log('Today’s authorized submission run started');

@@ -59,12 +59,12 @@ async function processUpdate(update, User) {
   // Handle /start command
   if (text === '/start') {
     await sendToChat(chatId, `
-*Welcome to JobHunter Pro Bot!* 🔥
+*Welcome to Naukri Khojo Bot!* 🔥
 
 I'll send you personalized job alerts based on your resume.
 
 *How to connect:*
-1. Go to your JobHunter dashboard
+1. Go to your Naukri Khojo dashboard
 2. Click *Settings* → *Connect Telegram*
 3. Copy the 6-digit code
 4. Send it to me here
@@ -82,7 +82,7 @@ I'll send you personalized job alerts based on your resume.
   // Handle /help command
   if (text === '/help') {
     await sendToChat(chatId, `
-*JobHunter Pro Bot Commands* 🤖
+*Naukri Khojo Bot Commands* 🤖
 
 /start — Welcome message
 /status — Check connection & notification status

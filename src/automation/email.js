@@ -10,7 +10,7 @@ function clientFor(credentials) {
 }
 async function connect(email, password, expectedEmail) {
   if (String(email || '').toLowerCase().trim() !== expectedEmail.toLowerCase()) throw new Error('Connect the application email from your confirmed profile');
-  const appPassword = String(password || '').replace(/\s/g, '');
+  const appPassword = String(password || '').replace(/[\s-]/g, '');
   if (!/^[a-zA-Z0-9]{16}$/.test(appPassword)) throw new Error('Enter a 16-character Gmail app password in the local dashboard');
   const credentials = { email: expectedEmail, appPassword, verifiedAt: new Date().toISOString() };
   const client = clientFor(credentials);

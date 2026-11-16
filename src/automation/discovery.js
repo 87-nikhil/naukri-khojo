@@ -5,7 +5,7 @@ const transport = { request(options, callback) { return redirects[options.protoc
 const { COMPANIES } = require('./companies');
 const { clean, key, evaluate, canonical, postedFrom } = require('./matching');
 const store = require('./store');
-const http = axios.create({ timeout: 18000, transport, maxContentLength: 15 * 1024 * 1024, headers: { 'User-Agent': 'JobHunter/1.0 (personal career search)', Accept: 'application/json,text/html' } });
+const http = axios.create({ timeout: 18000, transport, maxContentLength: 15 * 1024 * 1024, headers: { 'User-Agent': 'Naukri Khojo/1.0 (personal career search)', Accept: 'application/json,text/html' } });
 function safeUrl(url) {
   const u = new URL(url);
   if (u.protocol !== 'https:' || u.username || u.password || !/^[a-z0-9.-]+$/i.test(u.hostname) || /^localhost$|\.local$|^\d+\.\d+\.\d+\.\d+$|^127\.|^0\./i.test(u.hostname)) throw new Error('Use a public HTTPS career URL');

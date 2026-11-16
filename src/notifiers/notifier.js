@@ -3,7 +3,7 @@ const nodemailer = require('nodemailer');
 const { sendToChat } = require('./telegramBot');
 require('dotenv').config();
 
-const APP_URL = process.env.APP_URL || 'https://jobhunter-ochre.vercel.app';
+const APP_URL = process.env.APP_URL || 'https://naukri-khojo-ochre.vercel.app';
 
 // ── Email Notification ────────────────────────────────────────────────────────
 async function sendEmail(to, subject, htmlContent) {
@@ -115,7 +115,7 @@ ${topJobs.slice(0, 5).map((j, i) =>
       <a href="${APP_URL}" class="btn">Open Dashboard →</a>
     </div>
   </div>
-  <div class="footer">JobHunterPro • Auto-generated daily report</div>
+  <div class="footer">Naukri Khojo • Auto-generated daily report</div>
 </body>
 </html>
 `.trim();

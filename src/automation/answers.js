@@ -8,9 +8,9 @@ function resolve(field, profile, saved, origin, job) {
   if (standing) return standing;
   // Consent, declarations, referrals and unknown eligibility answers need an explicit per-question answer.
   if (/consent|agree|certify|declar|acknowledge|privacy|terms|retain|marketing|\breferr|previously|ever worked|relative|conflict|non.compete|background/.test(label)) return null;
-  // Gender is answered as the candidate chose; other demographic questions stay non-disclosed.
-  if (/^gender(?: identity)?\b|^what is your gender|^sex$/.test(label) && profile.gender) return { value: profile.gender, source: 'Your answer' };
-  if (/gender|ethnicity|race|veteran|disability|sexual orientation|demographic/.test(label)) return { value: 'Prefer not to disclose', source: 'Your demographic preference', optional: true };
+  // Gender is answered only when the candidate selected a value in their profile.
+  if (/gender|^sex$/.test(label)) return answer(profile.gender);
+  if (/ethnicity|race|veteran|disability|sexual orientation|demographic/.test(label)) return { value: 'Prefer not to disclose', source: 'Your demographic preference', optional: true };
   if (/how.*hear.*(?:opportun|position|job)|how.*find.*(?:opportun|position|job)/.test(label) && job.source) return { value: job.source, source: 'Verified job discovery source' };
   if (/^preferred (?:first )?name$/.test(label)) return answer(profile.firstName);
   if (/first name|given name/.test(label)) return answer(profile.firstName);
@@ -26,16 +26,31 @@ function resolve(field, profile, saved, origin, job) {
   if (!yesNoQuestion && /current (company|employer)|^company$|^organization$/.test(label)) return answer(profile.currentCompany);
   if (!yesNoQuestion && /current (title|designation)|^current role$/.test(label)) return answer(profile.currentTitle);
   if (/fixed|variable|bonus|stock|equity|monthly|per month|take.home/.test(label) && /salary|ctc|compensation|pay/.test(label)) return null;
-  if (/current.*(?:ctc|salary|compensation)/.test(label)) return answer(salary(field, profile.currentCtcLpa, profile));
+  if (/current.*(?:ctc|salary|compensation)/.test(label)) return profile.currentCtcLpa == null ? null : answer(salary(field, profile.currentCtcLpa, profile));
   // Expected salary: a typed answer gives the range (minimum–maximum); a numeric box gets the single expected figure.
-  if (/(expected|desired).*?(ctc|salary|compensation)/.test(label)) return answer(['text', 'textarea'].includes(field.type) && !field.numeric && profile.maximumCtcLpa ? `INR ${profile.minimumCtcLpa}-${profile.maximumCtcLpa} LPA` : salary(field, profile.expectedCtcLpa, profile));
-  if (/notice period|how soon.*join|when.*join/.test(label)) return answer(/days/.test(label) ? '30' : '1 month');
+  if (/(expected|desired).*?(ctc|salary|compensation)/.test(label)) {
+    if (profile.expectedCtcLpa == null && profile.minimumCtcLpa == null) return null;
+    return answer(['text', 'textarea'].includes(field.type) && !field.numeric && profile.minimumCtcLpa != null && profile.maximumCtcLpa != null ? `INR ${profile.minimumCtcLpa}-${profile.maximumCtcLpa} LPA` : salary(field, profile.expectedCtcLpa ?? profile.minimumCtcLpa, profile));
+  }
+  if (/notice period|how soon.*join|when.*join/.test(label)) {
+    if (profile.noticeDays == null || profile.noticeDays === 0) return null;
+    return answer(/days/.test(label) ? String(profile.noticeDays) : `${profile.noticeDays} days`);
+  }
   if (/reason.*(change|leav|switch)/.test(label)) return answer(profile.reasonForChange);
   const foreignScope = /czech|united states|\busa\b|u\.s\.|united kingdom|\buk\b|canada|germany|singapore|australia|\beu\b|thailand|japan/.test(label);
   const indiaRole = /india/i.test(job.location) || profile.cities?.some(c => String(job.location || '').toLowerCase().includes(c.toLowerCase())) || /gurugram/i.test(job.location);
   if (foreignScope && /authorized|eligible|able.*work|sponsorship|visa/.test(label)) return null;
-  if (/legally.*(authorized|eligible)|authorized to work|right to work/.test(label) && (indiaRole || /india/.test(label))) return answer('Yes');
-  if (/visa sponsorship|require.*sponsorship/.test(label) && indiaRole) return answer('No');
+  const workAuth = profile.workAuthorization;
+  if (/legally.*(authorized|eligible)|authorized to work|right to work/.test(label) && (indiaRole || /india/.test(label))) {
+    if (workAuth === 'authorized_india') return answer('Yes');
+    if (workAuth === 'not_authorized') return answer('No');
+    return null;
+  }
+  if (/visa sponsorship|require.*sponsorship|need.*sponsorship/.test(label) && indiaRole) {
+    if (workAuth === 'authorized_india') return answer('No');
+    if (workAuth === 'needs_sponsorship') return answer('Yes');
+    return null;
+  }
   if (/^country$|country of residence/.test(label)) return answer('India');
   if (/in which country.*currently based/.test(label)) return answer('India');
   if (/^current (city|location)$|^city$|^location \(city\)$/.test(label)) return answer(field.type === 'combobox' && profile.currentState ? `Gurugram, ${profile.currentState}, India` : profile.currentCity);
@@ -44,8 +59,8 @@ function resolve(field, profile, saved, origin, job) {
   if (/^end date year$|^graduation year$/.test(label) && profile.education?.endYear) return answer(String(profile.education.endYear));
   if (/^end date month$|^graduation month$/.test(label) && profile.education?.endMonth) return answer(profile.education.endMonth);
   if (/^school$|^institution$|^college$|^university$/.test(label)) return answer(profile.education?.institution);
-  if (/^degree$/.test(label)) return answer('Bachelor of Technology');
-  if (/^discipline$|field of study/.test(label)) return answer('Information Technology');
+  if (/^degree$/.test(label)) return answer(profile.education?.degree);
+  if (/^discipline$|field of study/.test(label)) return answer(profile.education?.fieldOfStudy);
   if (/cover letter/.test(label) && type !== 'file') return answer(coverLetter(profile, job));
   if (/designed and owned.*backend.*production.*end.to.end/.test(label)) return answer(profile.productionOwnership === true ? 'Yes' : undefined);
   if (type === 'checkbox-group' && /personally implemented in production/.test(label)) return profile.productionCapabilities?.length ? answer(profile.productionCapabilities.join(';')) : null;
@@ -60,14 +75,14 @@ function resolve(field, profile, saved, origin, job) {
   if (/preferred (?:work )?location|location preference/.test(label) && ['text', 'textarea'].includes(type)) return answer(/country,\s*city/.test(label) ? `India, ${profile.currentCity}` : `${profile.currentCity}, India (also ${profile.cities.filter(c => c !== profile.currentCity).join(', ')}, or remote)`);
   if (/(?:current|present) (?:job )?location|where do you (?:currently )?(?:reside|live)|confirm your current location/.test(label)) return answer(field.type === 'combobox' && profile.currentState ? `Gurugram, ${profile.currentState}, India` : `${profile.currentCity}, India`);
   if (/where did you (?:learn|hear|find)|how did you (?:learn|hear|find)/.test(label) && job.source) return answer(job.source);
-  if (/^(?:how many )?years of (?:work )?experience(?: do you have)?\??$|^total experience/.test(label)) return answer(String(profile.experienceYears || 6));
+  if (/^(?:how many )?years of (?:work )?experience(?: do you have)?\??$|^total experience/.test(label)) return answer(profile.experienceYears);
   if (/years|experience/.test(label)) {
-    if (/nosql|no.sql|mongodb|mongo db/.test(label)) return answer(profile.nosqlExperienceYears);
-    if (/aws|amazon web/.test(label)) return null;
-    if (/kafka/.test(label)) return answer('5.5');
-    if (/leadership|manag.*team|lead.*team/.test(label)) return answer('3');
-    if (/system design|java\b|kotlin|spring|node\.?js|gcp|google cloud/.test(label)) return answer('5');
-    if (/total.*experience|professional.*experience|overall.*experience|relevant full.time experience/.test(label)) return answer('6');
+    if (/total.*experience|professional.*experience|overall.*experience|relevant full.time experience|^how many years of work experience/.test(label)) return answer(profile.experienceYears);
+    const normalizedLabel = normalize(label);
+    const skillEntry = Object.entries(profile.years || {}).find(([skill, value]) => value !== undefined && value !== null && normalizedLabel.includes(normalize(skill)));
+    if (skillEntry) return answer(skillEntry[1]);
+    if (/nosql|no.sql|mongodb|mongo db/.test(label) && Number(profile.nosqlExperienceYears) > 0) return answer(profile.nosqlExperienceYears);
+    return null;
   }
   return null;
 }
@@ -96,7 +111,7 @@ function standingAnswer(label, standing, profile, job) {
   if (/artificial intelligence|\bai\b/.test(label) && /consent|would like to use|agree|permission/.test(label)) return yesNo(/recommend|future/.test(label) ? standing.aiRecommendationConsent : standing.aiScreeningConsent);
   return null;
 }
-function answer(value) { return value === undefined ? null : { value: String(value), source: 'Confirmed candidate profile' }; }
+function answer(value) { return value === undefined || value === null || value === '' ? null : { value: String(value), source: 'Confirmed candidate profile' }; }
 function salary(field, lpa, profile = {}) {
   const label = normalize(field.label);
   if (/lpa|lakhs?|lacs?/.test(label)) return String(lpa);

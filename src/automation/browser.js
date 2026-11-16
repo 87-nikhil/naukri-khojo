@@ -35,7 +35,11 @@ function quietHours(settings = store.state().settings) {
 async function open(url, options = {}) {
   safeUrl(url);
   const page = await (await browser(options)).newPage();
+  // Focus the interactive window before navigation. Some portals take several
+  // seconds to load, which otherwise makes the Sign in action look unresponsive.
+  if (options.interactive) await page.bringToFront();
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  if (options.interactive) await page.bringToFront();
   return page;
 }
 async function fields(page, rootSelector = '') {

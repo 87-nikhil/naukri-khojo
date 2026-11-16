@@ -1,4 +1,4 @@
-# JobHunter
+# Naukri Khojo
 
 A job-application worker that runs on your own Mac. It finds jobs that fit your profile on Naukri and on company career pages, fills in and submits the applications, and tracks recruiter replies from Gmail. You use it from a dashboard in your browser.
 
@@ -36,13 +36,13 @@ Naukri blocks hidden browsers, so Naukri runs in a window placed off screen. It 
 ```bash
 npm install
 npx playwright install chromium
-mkdir -p .automation
-cp profile.example.json .automation/profile.json
 ```
 
-### Fill in your profile
+### Create your profile
 
-Open `.automation/profile.json`. Every value is a placeholder; replace each with your own.
+Start the local worker with `npm run automation`, open **http://127.0.0.1:4129**, and choose **Profile & rules**. Upload a PDF or DOCX resume and click **Extract resume details**. Review and edit the suggestions, then save the profile. You can also edit an existing profile from this screen. Salary, notice period, preferred cities, employment history, and skill-specific years need your confirmation; the resume parser does not guess them. Saving a profile keeps the worker paused and automatic submission disabled until you explicitly change those settings.
+
+The profile is stored at `.automation/profile.json`; the uploaded resume is stored beside it. The example schema remains available in `profile.example.json` for manual setup.
 
 | Field | What it is for |
 |---|---|
@@ -71,7 +71,7 @@ npm run automation
 Open **http://127.0.0.1:4129**, then go to **Accounts & import**:
 
 1. **Sign in to Naukri.** A browser window opens; log in to your own account. The session is kept on your Mac.
-2. **Gmail** (optional, for reply tracking): enter your Gmail address and a Gmail app password (Google Account → Security → 2-Step Verification → App passwords), then **Connect and verify**.
+2. **Gmail** (optional, for reply tracking and the Cold email tab): enter your Gmail address and a Gmail app password (Google Account → Security → 2-Step Verification → App passwords), then **Connect and verify**.
 3. Click **Find jobs**, or wait for the schedule.
 
 Keep the Terminal window running and the Mac **plugged in with the lid open**. On battery with the lid closed the Mac sleeps and nothing runs.
@@ -84,6 +84,7 @@ Keep the Terminal window running and the Mac **plugged in with the lid open**. O
 | **Needs your answers** | Answer questions the worker couldn't, then it retries |
 | **Applied jobs** | What was submitted, with the confirmation; record recruiter calls and outcomes |
 | **Employer replies** | Recruiter emails, one row per employer (latest email) |
+| **Cold email** | Extract email addresses from `.xlsx` or `.csv`, review recipients, compose a subject/body, optionally attach a file, and send individual messages through the connected Gmail account |
 | **Relevant jobs** | Matches that need you to apply by hand (unsupported sites) |
 | **Profile & rules** | Your profile as the worker reads it |
 | **Saved daily reports** | Per-day CSV of applications |

@@ -613,7 +613,7 @@ router.get('/export/jobs', async (req, res) => {
       ].join(','));
     }
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=jobhunter-jobs.csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=naukri-khojo-jobs.csv');
     res.send(csvRows.join('\n'));
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -634,7 +634,7 @@ router.get('/export/applications', async (req, res) => {
       ].join(','));
     }
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=jobhunter-applications.csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=naukri-khojo-applications.csv');
     res.send(csvRows.join('\n'));
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -669,7 +669,7 @@ router.post('/telegram/generate-link', async (req, res) => {
       code,
       expiresIn: '10 minutes',
       botLink: botUsername ? `https://t.me/${botUsername}` : '',
-      instructions: `Send this code to the JobHunter bot on Telegram: ${code}`,
+      instructions: `Send this code to the Naukri Khojo bot on Telegram: ${code}`,
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -714,7 +714,7 @@ router.post('/telegram/link-manual', async (req, res) => {
 
     // Verify the chat ID works by sending a test message
     const { sendToChat } = require('./notifiers/telegramBot');
-    const sent = await sendToChat(String(chatId), '✅ *JobHunter Pro linked!* You\'ll now receive job alerts here.');
+    const sent = await sendToChat(String(chatId), '✅ *Naukri Khojo linked!* You\'ll now receive job alerts here.');
 
     if (!sent) {
       return res.status(400).json({ success: false, error: 'Could not send message to this chat ID. Make sure you\'ve started the bot first.' });
@@ -806,7 +806,7 @@ router.post('/telegram/test', async (req, res) => {
     const sent = await sendToChat(user.telegram.chatId, `
 ✅ *Test Notification*
 
-This is a test from JobHunter Pro!
+This is a test from Naukri Khojo!
 Your Telegram notifications are working correctly.
 
 *Your Settings:*

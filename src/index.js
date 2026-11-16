@@ -15,15 +15,23 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
+let dbConnectPromise = null;
 async function connectDB() {
-  try {
-    const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/jobhunter';
-    const opts = uri.includes('mongodb+srv') ? { tls: true, tlsAllowInvalidCertificates: true } : {};
-    await mongoose.connect(uri, opts);
-    console.log('✅ MongoDB connected');
-  } catch (err) {
-    console.error('❌ MongoDB connection failed:', err.message);
+  if (mongoose.connection.readyState === 1) return mongoose.connection;
+  if (!dbConnectPromise) {
+    const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo';
+    dbConnectPromise = mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 })
+      .then(connection => {
+        console.log(`✅ MongoDB connected (${connection.connection.name})`);
+        return connection;
+      })
+      .catch(error => {
+        console.error('❌ MongoDB connection failed:', error.message);
+        throw error;
+      })
+      .finally(() => { dbConnectPromise = null; });
   }
+  return dbConnectPromise;
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -31,12 +39,9 @@ app.use(cors());
 app.use(express.json());
 
 // ── Lazy DB connection for serverless ─────────────────────────────────────────
-let dbConnected = false;
 app.use('/api', async (req, res, next) => {
-  if (!dbConnected && mongoose.connection.readyState === 0) {
-    await connectDB();
-    dbConnected = true;
-  }
+  try { await connectDB(); }
+  catch { return res.status(503).json({ error: 'MongoDB is unavailable. Check the connection string, credentials, and Atlas Network Access IP allowlist, then retry.' }); }
   next();
 });
 
@@ -111,22 +116,24 @@ if (!process.env.VERCEL) {
 // ── Start Server (local only) ────────────────────────────────────────────────
 if (!process.env.VERCEL) {
   (async () => {
-    await connectDB();
-    dbConnected = true;
-
-    // Start Telegram bot polling (local dev only — use webhook in production)
-    const { deleteWebhook, startPolling } = require('./notifiers/telegramBot');
-    const { User } = require('./models');
-    await deleteWebhook(); // Remove any existing webhook so polling works
-    startPolling(User);
-
     app.listen(PORT, () => {
-      console.log(`\n🚀 JobHunter Pro running at http://localhost:${PORT}`);
+      console.log(`\n🚀 Naukri Khojo running at http://localhost:${PORT}`);
       console.log(`📊 Dashboard: http://localhost:${PORT}`);
       console.log(`🔌 API:       http://localhost:${PORT}/api/jobs`);
-      console.log(`🤖 Telegram:  Bot polling active`);
       console.log(`⏰ Cron:      Daily at 8:00 AM IST\n`);
     });
+
+    try {
+      await connectDB();
+      // Start Telegram bot polling only after MongoDB is ready.
+      const { deleteWebhook, startPolling } = require('./notifiers/telegramBot');
+      const { User } = require('./models');
+      await deleteWebhook();
+      startPolling(User);
+      console.log('🤖 Telegram:  Bot polling active');
+    } catch (error) {
+      console.error('MongoDB is unavailable at startup. The dashboard is up; API requests will retry the connection.');
+    }
   })();
 }
 

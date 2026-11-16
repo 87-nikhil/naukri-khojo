@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const multer = require('multer');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,6 +12,9 @@ const { importJob } = require('./discovery');
 const { normalize } = require('./answers');
 const { evaluate } = require('./matching');
 const browser = require('./browser');
+const { parseDocument, extractProfile } = require('./profileImport');
+const resumeUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+const coldAttachmentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 function isRunning() { return runner.isRunning() || store.workerActive(); }
 const PORT = Number(process.env.AUTOMATION_PORT || 4129);
 const token = crypto.randomBytes(32).toString('hex');
@@ -22,7 +26,7 @@ app.use((req, res, next) => {
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
   res.set('Referrer-Policy', 'no-referrer');
-  if (!['GET', 'HEAD'].includes(req.method) && req.get('X-JobHunter-Token') !== token) return res.status(403).json({ error: 'Open the local dashboard to perform this action' });
+  if (!['GET', 'HEAD'].includes(req.method) && req.get('X-Naukri-Khojo-Token') !== token) return res.status(403).json({ error: 'Open the local dashboard to perform this action' });
   next();
 });
 app.use(express.json({ limit: '100kb' }));
@@ -32,10 +36,112 @@ app.get('/', (req, res) => {
   res.type('html').send(html);
 });
 app.get('/api/state', (req, res) => {
-  const s = store.state(), p = runner.profile();
+  const s = store.state(), p = store.read('profile', null);
   // Job descriptions are most of the state file (80+ MB); the dashboard fetches one only when you open it.
   const slim = ({ description, attempts, match, ...j }) => ({ ...j, hasDescription: !!description, match: match && { score: match.score, eligible: match.eligible, blocked: match.blocked, reasons: match.reasons, salaryStatus: match.salaryStatus } });
   res.json({ ...s, jobs: s.jobs.map(slim), profile: p, companies: COMPANIES, companyStatus: store.read('companies-status', []), platforms: PLATFORMS, platformStatus: store.read('platform-status', []), running: isRunning(), day: store.indiaDay(), confirmedToday: runner.todays(s).length });
+});
+app.post('/api/profile/preview', resumeUpload.single('resume'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Choose a PDF or DOCX resume first' });
+    const ext = path.extname(req.file.originalname).toLowerCase();
+    const validPdf = ext === '.pdf' && req.file.buffer.subarray(0, 5).toString() === '%PDF-';
+    const validDocx = ext === '.docx' && req.file.buffer.subarray(0, 2).toString() === 'PK';
+    if (!validPdf && !validDocx) return res.status(400).json({ error: 'File type does not match a valid PDF or DOCX resume' });
+    const text = await parseDocument(req.file.buffer, req.file.originalname);
+    const { extractedText, ...suggestions } = extractProfile(text, req.file.originalname);
+    res.json({ suggestions });
+  } catch (error) { next(error); }
+});
+app.post('/api/profile', resumeUpload.single('resume'), async (req, res, next) => {
+  try {
+    if (isRunning()) return res.status(409).json({ error: 'Wait for the current run to finish before updating your profile' });
+    let ext, text, originalName;
+    if (req.file) {
+      ext = path.extname(req.file.originalname).toLowerCase();
+      const validPdf = ext === '.pdf' && req.file.buffer.subarray(0, 5).toString() === '%PDF-';
+      const validDocx = ext === '.docx' && req.file.buffer.subarray(0, 2).toString() === 'PK';
+      if (!validPdf && !validDocx) return res.status(400).json({ error: 'File type does not match a valid PDF or DOCX resume' });
+      text = await parseDocument(req.file.buffer, req.file.originalname);
+      originalName = req.file.originalname;
+    }
+    let values;
+    try { values = JSON.parse(req.body.profile || ''); } catch { return res.status(400).json({ error: 'Profile form data is invalid' }); }
+    const list = (value, max = 30) => Array.isArray(value) ? [...new Set(value.map(x => String(x).trim().slice(0, 100)).filter(Boolean))].slice(0, max) : [];
+    const number = (value, max) => { if (value === undefined || value === null || value === '') return null; const n = Number(value); return Number.isFinite(n) && n >= 0 && n <= max ? n : null; };
+    const name = String(values.name || '').trim().slice(0, 120);
+    const email = String(values.email || '').trim().slice(0, 254);
+    const cities = list(values.cities, 20);
+    const genderOptions = ['Female', 'Male', 'Non-binary', 'Other / self-describe', 'Prefer not to say'];
+    const gender = genderOptions.includes(values.gender) ? values.gender : '';
+    const workAuthOptions = ['authorized_india', 'needs_sponsorship', 'not_authorized'];
+    const workAuthorization = workAuthOptions.includes(values.workAuthorization) ? values.workAuthorization : '';
+    if (name.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !cities.length) return res.status(400).json({ error: 'Enter a name, valid email, and at least one preferred city' });
+    const original = store.read('profile', { cities: [], skills: [], years: {}, excludedCompanies: [], standingAnswers: {}, employment: [], education: {}, authorized: { autoSubmit: false }, coverLetter: '' });
+    let filename = original.resumeFile || '';
+    if (req.file) {
+      filename = `resume-${crypto.randomUUID()}${ext}`;
+      const resumePath = path.join(store.ROOT, filename);
+      fs.writeFileSync(resumePath, req.file.buffer, { mode: 0o600, flag: 'wx' });
+    } else if (!filename || !fs.existsSync(path.join(store.ROOT, filename))) {
+      return res.status(400).json({ error: 'Upload a PDF or DOCX resume before saving this profile' });
+    }
+    const startYear = number(values.education?.startYear, 2100);
+    const endYear = number(values.education?.endYear, 2100);
+    const years = Object.fromEntries(Object.entries(values.years || {}).slice(0, 60).map(([skill, value]) => [String(skill).trim().slice(0, 80), number(value, 60)]).filter(([skill, value]) => skill && value !== null));
+    if (!Array.isArray(values.employment) || values.employment.length > 20 || values.employment.some(item => !item || typeof item.company !== 'string' || typeof item.title !== 'string')) return res.status(400).json({ error: 'Employment history must be a JSON list of company/title records' });
+    const employment = values.employment.map(item => ({
+      company: item.company.trim().slice(0, 160),
+      title: item.title.trim().slice(0, 160),
+      start: String(item.start || '').trim().slice(0, 40),
+      end: String(item.end || '').trim().slice(0, 40),
+    })).filter(item => item.company && item.title);
+    const updated = {
+      ...original,
+      name,
+      firstName: String(values.firstName || '').trim().slice(0, 80),
+      lastName: String(values.lastName || '').trim().slice(0, 80),
+      email,
+      phone: String(values.phone || '').trim().slice(0, 40),
+      gender,
+      workAuthorization,
+      currentTitle: String(values.currentTitle || '').trim().slice(0, 160),
+      currentCompany: String(values.currentCompany || '').trim().slice(0, 160),
+      currentCity: String(values.currentCity || '').trim().slice(0, 100),
+      excludedCompanies: [...new Set([...(original.excludedCompanies || []), String(values.currentCompany || '').trim()].filter(Boolean))],
+      experienceYears: number(values.experienceYears, 60) ?? original.experienceYears,
+      cities,
+      skills: list(values.skills, 60),
+      searchKeywords: list(values.searchKeywords, 30),
+      currentCtcLpa: number(values.currentCtcLpa, 1000),
+      minimumCtcLpa: number(values.minimumCtcLpa, 1000),
+      expectedCtcLpa: number(values.expectedCtcLpa, 1000),
+      maximumCtcLpa: number(values.maximumCtcLpa, 1000),
+      noticeDays: number(values.noticeDays, 365) ?? 0,
+      noticeNegotiable: values.noticeNegotiable === true,
+      holdingOffer: values.holdingOffer === true,
+      employmentType: String(values.employmentType || 'Full-time').trim().slice(0, 80),
+      remoteCountry: String(values.remoteCountry || 'India').trim().slice(0, 80),
+      education: {
+        ...(original.education || {}),
+        degree: String(values.education?.degree || '').trim().slice(0, 160),
+        institution: String(values.education?.institution || '').trim().slice(0, 200),
+        startYear: startYear ?? 0,
+        endYear: endYear ?? 0,
+      },
+      employment,
+      years,
+      coverLetter: String(values.coverLetter || '').slice(0, 5000),
+      resumeFile: filename,
+      resumeOriginalName: req.file ? String(originalName).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 180) : original.resumeOriginalName,
+      resumeText: text || original.resumeText || '',
+      authorized: { ...(original.authorized || {}), autoSubmit: false },
+    };
+    store.write('profile', updated);
+    store.mutate(s => { s.settings.paused = true; s.settings.autoApply = false; });
+    store.event('Candidate profile updated from a reviewed resume and profile form');
+    res.json({ ok: true, profile: updated });
+  } catch (error) { next(error); }
 });
 app.get('/api/jobs/:id/description', (req, res) => { const j = store.state().jobs.find(j => j.id === req.params.id); if (!j) return res.sendStatus(404); res.json({ description: j.description || '' }); });
 app.get('/api/health', (req, res) => res.json({ ok: true, mode: 'local-automation', running: isRunning(), browserMode: 'headless', browserActive: browser.isBackground() }));
@@ -45,6 +151,41 @@ app.post('/api/inbox/scan', async (req, res, next) => { try { await require('./i
 app.get('/api/shortlist', (req, res) => res.json(require('./shortlist').build()));
 app.post('/api/email/connect', async (req, res, next) => {
   try { res.json(await require('./email').connect(req.body.email, req.body.appPassword, runner.profile().email)); } catch (error) { next(error); }
+});
+app.post('/api/cold-email/extract', coldAttachmentUpload.single('sheet'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Choose an XLSX or CSV sheet first.' });
+    res.json(await require('./coldEmail').extractContacts(req.file.buffer, req.file.originalname));
+  } catch (error) { next(error); }
+});
+app.get('/api/cold-email/contacts', (req, res, next) => {
+  try { res.json(require('./coldEmail').listContacts({ query: req.query.query, company: req.query.company, status: req.query.status, page: req.query.page, limit: req.query.limit })); }
+  catch (error) { next(error); }
+});
+app.post('/api/cold-email/contacts/import', (req, res, next) => {
+  try { res.json({ ok: true, ...require('./coldEmail').importContacts(req.body.contacts, req.body.sourceFile, req.body.duplicateCount) }); }
+  catch (error) { next(error); }
+});
+app.patch('/api/cold-email/contacts/:id', (req, res, next) => {
+  try { const contact = require('./coldEmail').updateContact(req.params.id, req.body); if (!contact) return res.sendStatus(404); res.json({ ok: true, contact }); }
+  catch (error) { next(error); }
+});
+app.delete('/api/cold-email/contacts/:id', (req, res, next) => {
+  try { if (!require('./coldEmail').deleteContact(req.params.id)) return res.sendStatus(404); res.json({ ok: true }); }
+  catch (error) { next(error); }
+});
+app.post('/api/cold-email/send', coldAttachmentUpload.single('attachment'), async (req, res, next) => {
+  try {
+    const contactIds = JSON.parse(req.body.contactIds || 'null');
+    const started = await require('./coldEmail').startCampaign({ contactIds, subject: req.body.subject, text: req.body.text, attachment: req.file, attested: req.body.attested === 'true' });
+    res.status(202).json(started);
+  } catch (error) { next(error); }
+});
+app.get('/api/cold-email/status/:id', (req, res) => {
+  const coldEmail = require('./coldEmail'); coldEmail.cleanup();
+  const result = coldEmail.status(req.params.id);
+  if (!result) return res.sendStatus(404);
+  res.json(result);
 });
 app.post('/api/jobs/:id/verify', (req, res) => {
   if (isRunning()) return res.status(409).json({ error: 'A run is already active' });
@@ -68,6 +209,7 @@ app.get('/reports/:file', (req, res) => {
 });
 app.post('/api/run', (req, res) => {
   if (isRunning()) return res.status(409).json({ error: 'A run is already active' });
+  if (!store.read('profile', null)) return res.status(400).json({ error: 'Upload a resume and save your candidate profile first' });
   const allowed = ['discover', 'apply', 'dry-run', 'daily'];
   if (!allowed.includes(req.body.mode)) return res.status(400).json({ error: 'Unknown run mode' });
   const mode = req.body.mode;
@@ -174,6 +316,15 @@ app.post('/api/jobs/:id/finish', async (req, res, next) => {
 app.post('/api/platforms/:name/open', async (req, res, next) => {
   try { if (isRunning()) return res.status(409).json({ error: 'Wait for the active run to finish before signing in' }); const platform = PLATFORMS.find(p => p.name.toLowerCase() === req.params.name.toLowerCase()); if (!platform) return res.sendStatus(404); if (!platform.url) return res.status(400).json({ error: 'The exact website URL must be confirmed first' }); await browser.open(platform.url, { interactive: true }); res.json({ ok: true }); } catch (error) { next(error); }
 });
+app.post('/api/platforms/:name/check', async (req, res, next) => {
+  try {
+    if (isRunning()) return res.status(409).json({ error: 'Wait for the active run to finish before checking platform sign-in' });
+    const platform = PLATFORMS.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
+    if (!platform) return res.sendStatus(404);
+    const statuses = await require('./platforms').inspect(platform.name);
+    res.json({ platform: statuses.find(item => item.name === platform.name) });
+  } catch (error) { next(error); }
+});
 app.patch('/api/jobs/:id/outcome', (req, res) => {
   const allowed = ['recruiter_call', 'screening', 'interview', 'offer', 'rejected'];
   if (!allowed.includes(req.body.outcome)) return res.status(400).json({ error: 'Unknown outcome' });
@@ -195,10 +346,9 @@ app.get('/evidence/:name', (req, res) => {
 });
 app.use((error, req, res, next) => { console.error(error.message); res.status(400).json({ error: error.message }); });
 function start() {
-  runner.profile();
   try { require('node:os').setPriority(process.pid, 10); } catch { /* best effort on supported platforms */ }
   const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`JobHunter daily applications: http://127.0.0.1:${PORT}`);
+    console.log(`Naukri Khojo daily applications: http://127.0.0.1:${PORT}`);
     console.log('Schedule: 8:00 AM IST. Keep this worker running and your Mac awake.');
     console.log('Applications run silently in a headless browser. Interactive windows open only on your explicit dashboard action.');
     if (process.argv.includes('--run-today')) runner.run().catch(e => console.error(e.message));
@@ -206,10 +356,10 @@ function start() {
   // Track employer replies every 30 minutes while the worker is up.
   cron.schedule('*/30 * * * *', () => { if (require('./email').status().connected) require('./inbox').scan().catch(e => console.error(e.message)); });
   // LinkedIn job-alert emails become employer-site applications (or a by-hand list) without touching LinkedIn.
-  cron.schedule('10,40 * * * *', () => { if (require('./email').status().connected) require('./linkedinAlerts').scan(runner.profile()).catch(e => console.error(e.message)); });
+  cron.schedule('10,40 * * * *', () => { const p = store.read('profile', null); if (p && require('./email').status().connected) require('./linkedinAlerts').scan(p).catch(e => console.error(e.message)); });
   // Quiet-hours runs pick up Naukri, which cannot run headless.
   // "Leave it for today": scheduled runs wait until pausedUntil; a dashboard click still runs at once.
-  const idle = s => !s.settings.paused && !isRunning() && !(s.settings.pausedUntil && Date.now() < Date.parse(s.settings.pausedUntil));
+  const idle = s => !!store.read('profile', null) && !s.settings.paused && !isRunning() && !(s.settings.pausedUntil && Date.now() < Date.parse(s.settings.pausedUntil));
   for (const at of ['5 21 * * *', '15 22 * * *', '30 23 * * *', '15 0 * * *', '15 1 * * *', '15 2 * * *']) cron.schedule(at, () => { const s = store.state(); if (idle(s)) runner.run().catch(e => console.error(e.message)); }, { timezone: 'Asia/Kolkata' });
   // Missed runs (Mac asleep at the scheduled minute) are caught up as soon as the worker is awake again:
   // inside the quiet hours if nothing ran in the last 50 minutes, and during the day if nothing ran since 8 AM.
@@ -223,8 +373,10 @@ function start() {
   };
   cron.schedule('*/15 * * * *', catchUp);
   setTimeout(catchUp, 60000);
-  // Keep the Mac from idle-sleeping while the worker is up (needs power; closing the lid still sleeps it).
-  try { require('node:child_process').spawn('caffeinate', ['-is', '-w', String(process.pid)], { stdio: 'ignore' }).unref(); } catch {}
+  // Keep macOS awake while the worker is up; other operating systems manage sleep separately.
+  if (process.platform === 'darwin') {
+    try { require('node:child_process').spawn('caffeinate', ['-is', '-w', String(process.pid)], { stdio: 'ignore' }).unref(); } catch {}
+  }
   cron.schedule('0 8 * * *', () => { const s = store.state(); if (idle(s)) runner.run().catch(e => console.error(e.message)); }, { timezone: 'Asia/Kolkata' });
   async function stop() { await browser.close().catch(() => {}); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); }
   process.on('SIGINT', stop); process.on('SIGTERM', stop);

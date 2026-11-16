@@ -6,7 +6,7 @@ module.exports = async (req, res) => {
     if (!uri) return res.json({ error: 'MONGODB_URI not set' });
 
     if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000, tls: true, tlsAllowInvalidCertificates: true });
+      await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
     }
     const collections = await mongoose.connection.db.listCollections().toArray();
     res.json({ ok: true, collections: collections.map(c => c.name) });

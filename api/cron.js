@@ -7,9 +7,8 @@ require('dotenv').config();
 
 async function connectDB() {
   if (mongoose.connection.readyState === 1) return;
-  const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/jobhunter';
-  const opts = uri.includes('mongodb+srv') ? { tls: true, tlsAllowInvalidCertificates: true } : {};
-  await mongoose.connect(uri, opts);
+  const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo';
+  await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
 }
 
 module.exports = async (req, res) => {
