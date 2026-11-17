@@ -1,10 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { User } = require('../models');
-
-if (!process.env.JWT_SECRET) {
-  console.warn('WARNING: JWT_SECRET env var is not set. Using a random secret — tokens will not persist across restarts.');
-}
-const JWT_SECRET = process.env.JWT_SECRET || require('crypto').randomBytes(32).toString('hex');
+const { JWT_SECRET } = require('../authSecret');
 
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;

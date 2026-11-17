@@ -77,11 +77,13 @@ function resolve(field, profile, saved, origin, job) {
   if (/where did you (?:learn|hear|find)|how did you (?:learn|hear|find)/.test(label) && job.source) return answer(job.source);
   if (/^(?:how many )?years of (?:work )?experience(?: do you have)?\??$|^total experience/.test(label)) return answer(profile.experienceYears);
   if (/years|experience/.test(label)) {
+    // Match a named technology before the generic "work experience" rule;
+    // otherwise a NoSQL question is incorrectly filled with total career years.
+    if (/nosql|no.sql|mongodb|mongo db/.test(label) && Number(profile.nosqlExperienceYears) > 0) return answer(profile.nosqlExperienceYears);
     if (/total.*experience|professional.*experience|overall.*experience|relevant full.time experience|^how many years of work experience/.test(label)) return answer(profile.experienceYears);
     const normalizedLabel = normalize(label);
     const skillEntry = Object.entries(profile.years || {}).find(([skill, value]) => value !== undefined && value !== null && normalizedLabel.includes(normalize(skill)));
     if (skillEntry) return answer(skillEntry[1]);
-    if (/nosql|no.sql|mongodb|mongo db/.test(label) && Number(profile.nosqlExperienceYears) > 0) return answer(profile.nosqlExperienceYears);
     return null;
   }
   return null;

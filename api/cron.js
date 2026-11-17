@@ -3,18 +3,19 @@
 // Triggers job hunt for ALL users and sends notifications
 
 const mongoose = require('mongoose');
+const { getMongoOptions } = require('../src/mongoOptions');
 require('dotenv').config();
 
 async function connectDB() {
   if (mongoose.connection.readyState === 1) return;
   const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo';
-  await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
+  await mongoose.connect(uri, getMongoOptions());
 }
 
 module.exports = async (req, res) => {
   // Verify cron secret (Vercel sends this header for cron jobs)
   const authHeader = req.headers['authorization'];
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}` && !process.env.VERCEL) {
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -22,6 +23,33 @@ module.exports = async (req, res) => {
     await connectDB();
 
     const { User, Resume, Job, Report } = require('../src/models');
+
+    if (process.env.AUTOMATION_QUEUE_ENABLED === 'true') {
+      const { enqueueJobHunt, dailyJobHuntIdempotencyKey } = require('../src/automationQueue');
+      const idempotencyKey = dailyJobHuntIdempotencyKey();
+      const users = await User.find().select('_id');
+      const results = [];
+      for (const user of users) {
+        try {
+          if (!(await Resume.exists({ userId: user._id }))) {
+            results.push({ userId: String(user._id), status: 'skipped', reason: 'no resume' });
+            continue;
+          }
+          const queued = await enqueueJobHunt(user._id, { idempotencyKey });
+          results.push({ userId: String(user._id), status: queued.accepted ? 'queued' : queued.duplicate ? `already-scheduled:${queued.activeRun?.status || 'unknown'}` : 'already-active' });
+        } catch (error) {
+          results.push({ userId: String(user._id), status: 'error', error: error.message });
+        }
+      }
+      try {
+        const { sendApplicationReminders } = require('../src/notifiers/notifier');
+        await sendApplicationReminders();
+      } catch (error) {
+        console.error('Reminder error:', error.message);
+      }
+      return res.json({ success: true, queued: results, timestamp: new Date().toISOString() });
+    }
+
     const { fetchRemotive, fetchArbeitnow, fetchHimalayas, fetchJobicy, fetchRemoteOK, fetchTheMuse, scrapeLinkedIn, scrapeNaukri } = require('../src/scrapers/jobScraper');
     const { matchJobs } = require('../src/matchers/jobMatcher');
     const { sendDailyReport, sendInstantJobAlert, sendApplicationReminders } = require('../src/notifiers/notifier');
@@ -73,7 +101,7 @@ module.exports = async (req, res) => {
         const unique = allJobs.filter(j => { if (seen.has(j.jobId)) return false; seen.add(j.jobId); return true; });
 
         // Score
-        const scored = matchJobs(unique, resumeProfile);
+        const scored = matchJobs(unique, resumeProfile, user.companyPreferences);
 
         // Save to DB
         let saved = 0;

@@ -1,5 +1,7 @@
+// File writes now handled via userFiles (GridFS enabled)
 const fs = require('node:fs');
 const path = require('node:path');
+const userFiles = require('./userFiles');
 const store = require('./store');
 const { evaluate } = require('./matching');
 const { resolve } = require('./answers');

@@ -31,7 +31,7 @@ function companyFor(companies, from, subject, body) {
 const PORTAL_MESSAGE = /sent you a (?:new )?message|new message from|inmail|wants to connect with you about|is interested in your profile|(?:invited|invites) you to apply|recruiters? (?:expressed interest|viewed your profile|contacted you|sent you)|message from (?:a )?recruiter|shortlisted you/i;
 const PORTAL_SENDERS = /messages-noreply@linkedin\.com|inmail-hit-reply@linkedin\.com|hit-reply@linkedin\.com|naukri\.com|instahyre\.com|hirist\.(?:tech|com)|wellfound\.com|angel\.co|cutshort\.io|iimjobs\.com|foundit\.in/i;
 async function scan({ days } = {}) {
-  const credentials = store.read('email-connection', null);
+  const credentials = require('./email').credentials();
   if (!credentials) return { connected: false, items: store.read('inbox', { items: [] }).items };
   const state = store.state();
   const applied = state.jobs.filter(j => j.status === 'submitted');
@@ -116,7 +116,7 @@ function dedupe(items, ownAddresses = []) {
   }
   return [...latest.values()].sort((a, b) => b.date.localeCompare(a.date));
 }
-function ownAddresses() { return [store.read('email-connection', {})?.email, store.read('profile', {})?.email]; }
+function ownAddresses() { return [require('./email').credentials()?.email, store.read('profile', {})?.email]; }
 // A reply that names a specific role belongs to that application only; a generic one (no role in the subject) applies to all at the company.
 // The most important reply wins: an unconfirmed application or an interview invite is never hidden behind a later receipt.
 // An email that names neither the role nor comes from the company's own domain (an agency thread mentioning

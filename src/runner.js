@@ -1,5 +1,6 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
+const { getMongoOptions } = require('./mongoOptions');
 const { parseResume } = require('./parsers/resumeParser');
 const { scrapeAllJobs } = require('./scrapers/jobScraper');
 const { matchJobs, categorizeJobs } = require('./matchers/jobMatcher');
@@ -12,17 +13,26 @@ const APPLY_LIMIT   = parseInt(process.env.DAILY_APPLY_LIMIT) || 10;
 const RESUME_PATH   = process.env.RESUME_PATH || './resume.pdf';
 
 // ── Run Status Tracking ───────────────────────────────────────────────────────
-const runStatus = {
-  running: false,
-  step: '',
-  progress: 0,
-  totalSteps: 7,
-  logs: [],
-  lastRun: null,
-  error: null,
-};
-
-function updateStatus(step, progress, message) {
+const runStatuses = new Map();
+const MAX_PARALLEL_JOB_HUNTS = Math.max(1, Math.min(100, Number.parseInt(process.env.JOB_HUNT_MAX_PARALLEL_RUNS, 10) || 4));
+const MAX_RETAINED_RUN_STATUSES = 2000;
+function statusKey(userId) { return String(userId || 'local'); }
+function newRunStatus() {
+  return { running: false, step: '', progress: 0, totalSteps: 7, logs: [], lastRun: null, error: null };
+}
+function mutableRunStatus(userId) {
+  const key = statusKey(userId);
+  if (!runStatuses.has(key) && runStatuses.size >= MAX_RETAINED_RUN_STATUSES) {
+    for (const [oldKey, status] of runStatuses) {
+      if (!status.running) runStatuses.delete(oldKey);
+      if (runStatuses.size < MAX_RETAINED_RUN_STATUSES * 0.75) break;
+    }
+  }
+  if (!runStatuses.has(key)) runStatuses.set(key, newRunStatus());
+  return runStatuses.get(key);
+}
+function updateStatus(userId, step, progress, message) {
+  const runStatus = mutableRunStatus(userId);
   runStatus.step = step;
   runStatus.progress = progress;
   if (message) {
@@ -30,8 +40,17 @@ function updateStatus(step, progress, message) {
   }
 }
 
-function getRunStatus() {
+function getRunStatus(userId) {
+  const runStatus = runStatuses.get(statusKey(userId)) || newRunStatus();
   return { ...runStatus, logs: [...runStatus.logs] };
+}
+
+function hasRunCapacity(userId) {
+  const own = runStatuses.get(statusKey(userId));
+  if (own?.running) return false;
+  let active = 0;
+  for (const status of runStatuses.values()) if (status.running) active++;
+  return active < MAX_PARALLEL_JOB_HUNTS;
 }
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
@@ -40,14 +59,15 @@ async function connectDB() {
     console.log('✅ MongoDB already connected');
     return;
   }
-  await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo', { serverSelectionTimeoutMS: 8000 });
+  await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo', getMongoOptions());
   console.log('✅ MongoDB connected');
 }
 
 // ── Save Jobs to DB ───────────────────────────────────────────────────────────
-async function saveJobs(jobs, userId) {
+async function saveJobs(jobs, userId, assertLease) {
   let saved = 0;
   for (const job of jobs) {
+    if (assertLease) await assertLease();
     try {
       await Job.findOneAndUpdate(
         { jobId: job.jobId, userId },
@@ -73,11 +93,13 @@ async function markApplied(jobs, userId) {
 }
 
 // ── Main Hunt Runner ──────────────────────────────────────────────────────────
-async function runJobHunt(userId, isAdmin = false) {
+async function runJobHunt(userId, isAdmin = false, { assertLease } = {}) {
+  if (!hasRunCapacity(userId)) throw new Error('A job hunt is already active for this account or the server has reached its direct-run capacity.');
+  const runStatus = mutableRunStatus(userId);
   runStatus.running = true;
   runStatus.error = null;
   runStatus.logs = [];
-  updateStatus('starting', 0, 'Job hunt started');
+  updateStatus(userId, 'starting', 0, 'Job hunt started');
 
   console.log('\n╔══════════════════════════════════════╗');
   console.log('║     🔥 Naukri Khojo — Daily Run      ║');
@@ -86,29 +108,26 @@ async function runJobHunt(userId, isAdmin = false) {
 
   try {
     // ── Step 1: Parse Resume ───────────────────────────────────────────────
-    updateStatus('parsing_resume', 1, 'Parsing resume...');
+    updateStatus(userId, 'parsing_resume', 1, 'Parsing resume...');
     console.log('\n📄 STEP 1: Parsing Resume...');
     let resumeProfile;
-    try {
-      resumeProfile = await parseResume(path.resolve(RESUME_PATH));
-    } catch (err) {
-      console.log('⚠️  Resume file not found — using saved profile from DB');
-      if (!userId) {
-        throw new Error('userId is required to run job hunt');
-      }
+    if (userId) {
+      // A shared RESUME_PATH must never override the authenticated account's
+      // MongoDB profile: doing so can score jobs against another user's resume.
       resumeProfile = await Resume.findOne({ userId }).lean();
-      if (!resumeProfile) {
-        throw new Error('No resume found. Please upload a resume first.');
-      }
+      if (!resumeProfile) throw new Error('No resume found. Please upload a resume first.');
+    } else {
+      resumeProfile = await parseResume(path.resolve(RESUME_PATH));
     }
 
     // ── Step 3: Scrape Jobs ────────────────────────────────────────────────
-    updateStatus('scraping_jobs', 2, 'Scraping jobs from all sources...');
+    updateStatus(userId, 'scraping_jobs', 2, 'Scraping jobs from all sources...');
     console.log('\n🔍 STEP 2: Scraping Jobs...');
     const rawJobs = await scrapeAllJobs(resumeProfile);
+    if (assertLease) await assertLease();
 
     // ── Step 2b: Enrich Jobs ──────────────────────────────────────────────
-    updateStatus('enriching_jobs', 2, `Found ${rawJobs.length} jobs. Enriching with descriptions...`);
+    updateStatus(userId, 'enriching_jobs', 2, `Found ${rawJobs.length} jobs. Enriching with descriptions...`);
     console.log('\n🔎 STEP 2b: Enriching Jobs...');
     const { enrichJobs } = require('./scrapers/jobEnricher');
     // Only enrich jobs that have no description
@@ -116,17 +135,17 @@ async function runJobHunt(userId, isAdmin = false) {
     const notEnrich = rawJobs.filter(j => j.description || j.source !== 'LinkedIn');
     const enrichedBatch = await enrichJobs(toEnrich, 3);
     const enrichedJobs = [...notEnrich, ...enrichedBatch];
+    if (assertLease) await assertLease();
 
-    const savedCount = await saveJobs(enrichedJobs, userId);
+    const savedCount = await saveJobs(enrichedJobs, userId, assertLease);
     console.log(`   💾 Saved ${savedCount} new jobs to database`);
-    updateStatus('matching_jobs', 3, `Scraped ${enrichedJobs.length} jobs, saved ${savedCount} new. Matching to resume...`);
+    updateStatus(userId, 'matching_jobs', 3, `Scraped ${enrichedJobs.length} jobs, saved ${savedCount} new. Matching to resume...`);
 
     // ── Step 4: Match & Score Jobs ─────────────────────────────────────────
     console.log('\n🎯 STEP 3: Matching Jobs to Resume...');
-    const scoredJobs = matchJobs(enrichedJobs, resumeProfile);
-
     // Use user's preference for min score (from DB), fallback to env, fallback to 65
     const user = userId ? await User.findById(userId) : null;
+    const scoredJobs = matchJobs(enrichedJobs, resumeProfile, user?.companyPreferences);
     const userMinScore = user?.notifications?.minScoreAlert || MIN_SCORE || 65;
 
     const highMatch = scoredJobs.filter(j => j.matchScore >= userMinScore);
@@ -136,11 +155,13 @@ async function runJobHunt(userId, isAdmin = false) {
 
     // Update scores in DB
     for (const job of scoredJobs) {
+      if (assertLease) await assertLease();
       await Job.findOneAndUpdate({ jobId: job.jobId, userId }, { matchScore: job.matchScore });
     }
 
     // ── Step 5: Build Report ─────────────────────────────────────────────
-    updateStatus('building_report', 5, 'Building daily report...');
+    if (assertLease) await assertLease();
+    updateStatus(userId, 'building_report', 5, 'Building daily report...');
     console.log('\n📊 STEP 5: Building Report...');
     const report = await Report.create({
       userId:      userId,
@@ -158,16 +179,18 @@ async function runJobHunt(userId, isAdmin = false) {
     });
 
     // ── Step 6: Send Notifications ───────────────────────────────────────
-    updateStatus('sending_notifications', 6, 'Sending notifications...');
+    updateStatus(userId, 'sending_notifications', 6, 'Sending notifications...');
     console.log('\n📬 STEP 6: Sending Notifications...');
 
     // Send daily report
+    if (assertLease) await assertLease();
     await sendDailyReport(report);
 
     // Send instant Telegram alerts for jobs >= user's minScoreAlert preference
     if (user) {
       const alertJobs = highMatch.slice(0, 5); // top 5 matching jobs
       for (const job of alertJobs) {
+        if (assertLease) await assertLease();
         await sendInstantJobAlert(user, job);
       }
       if (alertJobs.length > 0) {
@@ -189,7 +212,7 @@ async function runJobHunt(userId, isAdmin = false) {
       console.log(`      👉 ${j.applyLink}`);
     });
 
-    updateStatus('complete', 7, `Hunt complete! ${enrichedJobs.length} jobs found, ${highMatch.length} high matches, ${readyToApply.length} ready to apply.`);
+    updateStatus(userId, 'complete', 7, `Hunt complete! ${enrichedJobs.length} jobs found, ${highMatch.length} high matches, ${readyToApply.length} ready to apply.`);
     runStatus.running = false;
     runStatus.lastRun = new Date().toISOString();
 
@@ -199,7 +222,7 @@ async function runJobHunt(userId, isAdmin = false) {
     console.error('❌ Runner error:', err);
     runStatus.running = false;
     runStatus.error = err.message;
-    updateStatus('error', 0, `Error: ${err.message}`);
+    updateStatus(userId, 'error', 0, `Error: ${err.message}`);
     throw err;
   }
 }
@@ -227,13 +250,14 @@ async function rescoreAllJobs(userId) {
   // Load resume from DB — strictly per user
   const resumeProfile = await Resume.findOne({ userId }).lean();
   if (!resumeProfile) return 0;
+  const user = await User.findById(userId).select('companyPreferences').lean();
 
   // Load all jobs from DB
   const allJobs = userId ? await Job.find({ userId }).lean() : await Job.find().lean();
   if (allJobs.length === 0) return 0;
 
   // Re-run matching/scoring
-  const scoredJobs = matchJobs(allJobs, resumeProfile);
+  const scoredJobs = matchJobs(allJobs, resumeProfile, user?.companyPreferences);
 
   // Update each job's matchScore in DB
   let updated = 0;
@@ -249,4 +273,4 @@ async function rescoreAllJobs(userId) {
   return updated;
 }
 
-module.exports = { runJobHunt, getRunStatus, rescoreAllJobs };
+module.exports = { runJobHunt, getRunStatus, hasRunCapacity, rescoreAllJobs };

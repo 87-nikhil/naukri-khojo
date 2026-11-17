@@ -5,16 +5,26 @@ const { chromium } = require('playwright');
 const store = require('../src/automation/store');
 const root = `http://127.0.0.1:${process.env.AUTOMATION_PORT || 4129}`;
 (async () => {
-  const health = await fetch(`${root}/api/health`).then(r => r.json()); assert.equal(health.ok, true); assert.equal(health.browserMode, 'headless');
+  const sessionToken = process.env.AUTOMATION_SESSION_TOKEN;
+  const anonymousHealth = await fetch(`${root}/api/health`);
+  if (!sessionToken) {
+    assert.equal(anonymousHealth.status, 401, 'Automation APIs must require a signed-in portal session');
+    console.log('Automation access gate verified. Sign in through the main portal and set AUTOMATION_SESSION_TOKEN to run authenticated UI checks.');
+    return;
+  }
+  const authHeaders = { Authorization: `Bearer ${sessionToken}` };
+  const health = await fetch(`${root}/api/health`, { headers: authHeaders }).then(r => r.json()); assert.equal(health.ok, true); assert.equal(health.browserMode, 'headless');
   const unauthorized = await fetch(`${root}/api/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'apply' }) }); assert.equal(unauthorized.status, 403);
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = []; page.on('pageerror', e => errors.push(e.message));
-    await page.goto(root); await page.waitForFunction(() => document.getElementById('profileInfo').textContent.length > 0);
+    await page.goto(root);
+    await page.evaluate(token => sessionStorage.setItem('nkp_automation_session', token), sessionToken);
+    await page.reload(); await page.waitForFunction(() => document.getElementById('profileInfo').textContent.length > 0);
     await page.getByRole('button', { name: 'Relevant jobs', exact: true }).click();
     await page.locator('#shortlistJobs article').first().waitFor();
-    const portalShortlist = await fetch(`${root}/api/shortlist`).then(r => r.json());
+    const portalShortlist = await fetch(`${root}/api/shortlist`, { headers: authHeaders }).then(r => r.json());
     assert.equal(await page.locator('#shortlistJobs article').count(), portalShortlist.count);
     for (const name of ['OZI Technologies','EPAM','MakeMyTrip','Nextloop Technologies']) assert.ok((await page.locator('#shortlistJobs').innerText()).includes(name));
     await page.getByRole('textbox', { name: 'Search relevant jobs' }).fill('OZI');
@@ -26,12 +36,12 @@ const root = `http://127.0.0.1:${process.env.AUTOMATION_PORT || 4129}`;
     await page.getByRole('link', { name: 'Download CSV' }).first().waitFor();
     const shortlistLink = page.getByRole('link', { name: 'Relevant jobs and manual completion flags' });
     assert.equal(await shortlistLink.getAttribute('href'), `/reports/shortlist-${store.indiaDay()}.html`);
-    const shortlistResponse = await fetch(`${root}/reports/shortlist-${store.indiaDay()}.json`);
+    const shortlistResponse = await fetch(`${root}/reports/shortlist-${store.indiaDay()}.json`, { headers: authHeaders });
     assert.equal(shortlistResponse.status, 200);
     const shortlist = await shortlistResponse.json();
     assert.equal(shortlist.count, shortlist.jobs.length);
     assert.ok(shortlist.jobs.every(j => j.applicationStatus !== 'submitted'));
-    const report = await fetch(`${root}/reports/${store.indiaDay()}.json`).then(r => r.json());
+    const report = await fetch(`${root}/reports/${store.indiaDay()}.json`, { headers: authHeaders }).then(r => r.json());
     assert.ok(report.jobs.every(j => j.status !== 'excluded'));
     assert.ok(!report.jobs.some(j => /account specialist|marketing|sales/i.test(j.title)));
     await page.getByRole('button', { name: 'Applications', exact: true }).click();
@@ -121,7 +131,7 @@ const root = `http://127.0.0.1:${process.env.AUTOMATION_PORT || 4129}`;
       assert.equal(health.running, false, 'Wait for the current worker run');
       const result = await page.evaluate(async () => {
         async function post(url, method, body) {
-          const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Naukri-Khojo-Token': TOKEN }, body: JSON.stringify(body) });
+          const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json', 'X-Naukri-Khojo-Token': TOKEN, Authorization: 'Bearer ' + portalSessionToken }, body: JSON.stringify(body) });
           if (!response.ok) throw Error((await response.json()).error || 'Local action failed');
         }
         await post('/api/settings', 'PATCH', { dailyTarget: 15 });
@@ -159,7 +169,7 @@ const root = `http://127.0.0.1:${process.env.AUTOMATION_PORT || 4129}`;
       const index = process.argv.indexOf('--job');
       const jobId = index >= 0 ? process.argv[index + 1] : undefined;
       const result = await page.evaluate(async jobId => {
-        const response = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Naukri-Khojo-Token': TOKEN }, body: JSON.stringify({ mode: 'apply', jobId }) });
+        const response = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Naukri-Khojo-Token': TOKEN, Authorization: 'Bearer ' + portalSessionToken }, body: JSON.stringify({ mode: 'apply', jobId }) });
         return { status: response.status, body: await response.json() };
       }, jobId);
       assert.equal(result.status, 200); console.log('Today’s authorized submission run started');

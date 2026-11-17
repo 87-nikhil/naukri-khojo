@@ -1,23 +1,11 @@
 // ── Job Matching Engine ───────────────────────────────────────────────────────
 // Scores each job against your resume profile
 
-const fs = require('fs');
-const path = require('path');
 
 // ── Load company lists from config.json ─────────────────────────────────────
-let PREFERRED_COMPANIES = [];
-let AVOID_COMPANIES = [];
-try {
-  const config = JSON.parse(fs.readFileSync(path.join(__dirname, '../../config.json'), 'utf-8'));
-  PREFERRED_COMPANIES = (config.preferred || []).map(c => c.toLowerCase());
-  AVOID_COMPANIES = (config.blocked || []).map(c => c.toLowerCase());
-} catch {
-  PREFERRED_COMPANIES = [];
-  AVOID_COMPANIES = [];
-}
 
 // ── Score a Single Job ────────────────────────────────────────────────────────
-function scoreJob(job, resumeProfile) {
+function scoreJob(job, resumeProfile, companyPreferences = {}) {
   let score = 0;
   const reasons = [];
 
@@ -116,7 +104,9 @@ function scoreJob(job, resumeProfile) {
   }
 
   // ── 4. Preferred Company (max 10 points) ───────────────────────────────────
-  if (PREFERRED_COMPANIES.some(pc => company.includes(pc))) {
+  const preferredCompanies = Array.isArray(companyPreferences.preferred) ? companyPreferences.preferred.map(c => String(c).toLowerCase()) : [];
+  const avoidedCompanies = Array.isArray(companyPreferences.blocked) ? companyPreferences.blocked.map(c => String(c).toLowerCase()) : [];
+  if (preferredCompanies.some(pc => company.includes(pc))) {
     score += 10;
     reasons.push('Preferred company (+10)');
   }
@@ -128,7 +118,7 @@ function scoreJob(job, resumeProfile) {
   }
 
   // ── 6. Avoid blocklist ─────────────────────────────────────────────────────
-  if (AVOID_COMPANIES.some(ac => company.includes(ac))) {
+  if (avoidedCompanies.some(ac => company.includes(ac))) {
     score = Math.max(0, score - 30);
     reasons.push('Avoided company (-30)');
   }
@@ -140,10 +130,10 @@ function scoreJob(job, resumeProfile) {
 }
 
 // ── Match All Jobs ────────────────────────────────────────────────────────────
-function matchJobs(jobs, resumeProfile) {
+function matchJobs(jobs, resumeProfile, companyPreferences = {}) {
   return jobs
     .map(job => {
-      const { score, reasons, matchedSkills } = scoreJob(job, resumeProfile);
+      const { score, reasons, matchedSkills } = scoreJob(job, resumeProfile, companyPreferences);
       return { ...job, matchScore: score, matchReasons: reasons, matchedSkills };
     })
     .sort((a, b) => b.matchScore - a.matchScore);

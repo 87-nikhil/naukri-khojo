@@ -380,7 +380,7 @@ body{font-family:'DM Sans',sans-serif;background:#0F172A;color:#E2E8F0;min-heigh
 <nav class="nav">
   <div class="logo">Naukri Khojo</div>
   <div class="nav-right">
-    <a class="btn btn-primary btn-sm nav-hide-mobile" href="http://127.0.0.1:4129/" id="dailyAutoHuntBtn">Daily Auto Hunt</a>
+    <button class="btn btn-primary btn-sm nav-hide-mobile" onclick="openAutomationPortal(event)" id="dailyAutoHuntBtn">Daily Auto Hunt</button>
     <span class="last-run nav-hide-mobile" id="userEmail" style="font-size:12px;color:#60A5FA;font-weight:600"></span>
     <span class="last-run nav-hide-mobile" id="lastRun">Never run</span>
     <button class="btn btn-ghost btn-sm nav-hide-mobile" onclick="rescoreJobs()" id="rescoreBtn">Re-score</button>
@@ -1384,7 +1384,30 @@ async function doSignup() {
   btn.disabled = false; btn.textContent = 'Create Account';
 }
 
+let automationWindow = null;
+
+async function openAutomationPortal(event) {
+  event?.preventDefault();
+  automationWindow = window.open('about:blank', 'naukriKhojoAutomation');
+  if (!automationWindow) return showToast('Allow pop-ups to open the automation module.');
+  try {
+    const response = await fetch('/api/automation/sso-ticket', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Could not sign in to automation.');
+    automationWindow.location.replace('http://127.0.0.1:4129/#sso=' + encodeURIComponent(data.ticket));
+  } catch (error) {
+    automationWindow.close();
+    automationWindow = null;
+    showToast(error.message || 'Start the local automation worker and try again.');
+  }
+}
+
 function doLogout() {
+  if (automationWindow && !automationWindow.closed) {
+    try { automationWindow.postMessage({ type: 'naukri-khojo-logout' }, 'http://127.0.0.1:4129'); } catch {}
+    automationWindow.close();
+    automationWindow = null;
+  }
   localStorage.removeItem('jh_token');
   localStorage.removeItem('jh_name');
   localStorage.removeItem('jh_post');

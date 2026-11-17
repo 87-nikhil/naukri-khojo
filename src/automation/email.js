@@ -2,13 +2,15 @@ const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const cheerio = require('cheerio');
 const store = require('./store');
-function status() { const c = store.read('email-connection', null); return { connected: !!c, email: c?.email || '', verifiedAt: c?.verifiedAt || null }; }
+const secrets = require('./secrets');
+function credentialsForMailbox() { return secrets.readLocal(); }
+function status() { const c = credentialsForMailbox(); return { connected: !!c, email: c?.email || '', verifiedAt: c?.verifiedAt || null }; }
 // Socket timeouts arrive as 'error' events; an unhandled one would crash the worker.
 function withErrorHandler(client) { client.on('error', () => {}); return client; }
 function clientFor(credentials) {
   return withErrorHandler(new ImapFlow({ host: 'imap.gmail.com', port: 993, secure: true, auth: { user: credentials.email, pass: credentials.appPassword }, logger: false, connectionTimeout: 15000, greetingTimeout: 10000, socketTimeout: 20000 }));
 }
-async function connect(email, password, expectedEmail) {
+async function verifyConnection(email, password, expectedEmail) {
   if (String(email || '').toLowerCase().trim() !== expectedEmail.toLowerCase()) throw new Error('Connect the application email from your confirmed profile');
   const appPassword = String(password || '').replace(/[\s-]/g, '');
   if (!/^[a-zA-Z0-9]{16}$/.test(appPassword)) throw new Error('Enter a 16-character Gmail app password in the local dashboard');
@@ -17,7 +19,10 @@ async function connect(email, password, expectedEmail) {
   try { await client.connect(); await client.mailboxOpen('INBOX', { readOnly: true }); }
   catch { throw new Error('Gmail authentication failed. Check the account and app password. No connection was saved.'); }
   finally { await client.logout().catch(() => {}); }
-  store.write('email-connection', credentials);
+  return credentials;
+}
+async function connect(email, password, expectedEmail) {
+  secrets.writeLocal(await verifyConnection(email, password, expectedEmail));
   store.event('Local Gmail verification connection authenticated');
   return status();
 }
@@ -36,7 +41,7 @@ function extractMailCode(mail) {
 }
 function trustedSender(address) { const domain = String(address || '').split('@').pop().toLowerCase(); return /(?:^|\.)greenhouse\.io$|(?:^|\.)greenhouse-mail\.io$/.test(domain); }
 async function findCode(company, since, expectedEmail) {
-  const credentials = store.read('email-connection', null);
+  const credentials = credentialsForMailbox();
   if (!credentials || credentials.email !== expectedEmail) return null;
   const client = clientFor(credentials);
   const diagnostic = { company, checkedAt: new Date().toISOString(), matchingMessages: 0, rejectedSender: 0, rejectedDate: 0, rejectedRecipient: 0, missingCode: 0, codeFound: false };
@@ -72,10 +77,10 @@ async function waitForCode(company, since, expectedEmail) {
   }
   return null;
 }
-module.exports = { status, connect, findCode, waitForCode, extractCode, extractMailCode, trustedSender };
+module.exports = { status, credentials: credentialsForMailbox, verifyConnection, connect, findCode, waitForCode, extractCode, extractMailCode, trustedSender };
 
 async function findHiristOTP(since, expectedEmail) {
-  const credentials = store.read('email-connection', null);
+  const credentials = credentialsForMailbox();
   if (!credentials || credentials.email !== expectedEmail) return null;
   const client = clientFor(credentials);
   const diagnostic = { portal: 'Hirist', checkedAt: new Date().toISOString(), matchingVerificationMessages: 0, codeFound: false };

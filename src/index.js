@@ -7,12 +7,20 @@ if (!process.env.VERCEL && !process.env.MONGODB_URI && require('fs').existsSync(
 }
 const express   = require('express');
 const mongoose  = require('mongoose');
+const { getMongoOptions } = require('./mongoOptions');
 const cors      = require('cors');
 const path      = require('path');
 const routes    = require('./routes');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+const trustProxyHops = process.env.TRUST_PROXY_HOPS === undefined
+  ? (process.env.VERCEL ? 1 : false)
+  : Number(process.env.TRUST_PROXY_HOPS);
+if (trustProxyHops !== false && (!Number.isInteger(trustProxyHops) || trustProxyHops < 1 || trustProxyHops > 5)) {
+  throw new Error('TRUST_PROXY_HOPS must be an integer from 1 to 5.');
+}
+app.set('trust proxy', trustProxyHops);
 
 // ── Connect MongoDB ───────────────────────────────────────────────────────────
 let dbConnectPromise = null;
@@ -20,7 +28,7 @@ async function connectDB() {
   if (mongoose.connection.readyState === 1) return mongoose.connection;
   if (!dbConnectPromise) {
     const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/naukri-khojo';
-    dbConnectPromise = mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 })
+    dbConnectPromise = mongoose.connect(uri, getMongoOptions())
       .then(connection => {
         console.log(`✅ MongoDB connected (${connection.connection.name})`);
         return connection;
@@ -73,16 +81,22 @@ if (!process.env.VERCEL) {
   const cron = require('node-cron');
   const { runJobHunt } = require('./runner');
   const { sendApplicationReminders, sendWeeklyDigest } = require('./notifiers/notifier');
-  const { User } = require('./models');
+  const { User, Resume } = require('./models');
+  const { enqueueJobHunt, dailyJobHuntIdempotencyKey } = require('./automationQueue');
 
   // Daily job hunt at 8:00 AM IST — runs for ALL users with a resume
   cron.schedule('0 8 * * *', async () => {
     console.log('⏰ Cron triggered — starting daily job hunt for all users');
     try {
+      const idempotencyKey = dailyJobHuntIdempotencyKey();
       const users = await User.find();
       for (const user of users) {
         try {
-          await runJobHunt(user._id, true); // true = send notifications
+          if (process.env.AUTOMATION_QUEUE_ENABLED === 'true') {
+            if (await Resume.exists({ userId: user._id })) await enqueueJobHunt(user._id, { idempotencyKey });
+          } else {
+            await runJobHunt(user._id, true); // legacy local scheduler
+          }
         } catch (err) {
           console.error(`Hunt failed for ${user.email}:`, err.message);
         }

@@ -5,6 +5,42 @@ require('dotenv').config();
 
 const APP_URL = process.env.APP_URL || 'https://naukri-khojo-ochre.vercel.app';
 
+function indiaDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+function scheduledDeliveryKey(kind, date = new Date()) {
+  const day = indiaDateKey(date);
+  if (kind === 'application-reminder') return `${kind}:${day}`;
+  if (kind === 'weekly-digest') {
+    const sunday = new Date(`${day}T12:00:00Z`);
+    sunday.setUTCDate(sunday.getUTCDate() - sunday.getUTCDay());
+    return `${kind}:${sunday.toISOString().slice(0, 10)}`;
+  }
+  throw new Error('Unknown scheduled notification type.');
+}
+
+async function sendScheduledTelegramOnce(user, deliveryKey, message) {
+  const { NotificationDelivery } = require('../models');
+  const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+  try {
+    await NotificationDelivery.create({ userId: user._id, deliveryKey, status: 'sending', expiresAt });
+  } catch (error) {
+    if (error.code === 11000) return false;
+    throw error;
+  }
+
+  let delivered = false;
+  try {
+    delivered = await sendToChat(user.telegram.chatId, message);
+    return delivered;
+  } finally {
+    await NotificationDelivery.updateOne({ userId: user._id, deliveryKey, status: 'sending' }, {
+      $set: { status: delivered ? 'sent' : 'failed', completedAt: new Date() },
+    });
+  }
+}
+
 // ── Email Notification ────────────────────────────────────────────────────────
 async function sendEmail(to, subject, htmlContent) {
   const emailFrom = process.env.EMAIL_FROM;
@@ -236,8 +272,8 @@ ${appList}
 _Update status in your dashboard_
     `.trim();
 
-    await sendToChat(user.telegram.chatId, msg);
-    console.log(`📬 Sent application reminder to ${user.email}`);
+    const delivered = await sendScheduledTelegramOnce(user, scheduledDeliveryKey('application-reminder'), msg);
+    if (delivered) console.log(`📬 Sent application reminder to ${user.email}`);
   }
 }
 
@@ -282,8 +318,8 @@ ${topJobs.length > 0 ? `🏆 *Best Matches This Week*\n${topJobs.map((j, i) =>
 💪 _Keep going! Consistency is key._
     `.trim();
 
-    await sendToChat(user.telegram.chatId, msg);
-    console.log(`📊 Sent weekly digest to ${user.email}`);
+    const delivered = await sendScheduledTelegramOnce(user, scheduledDeliveryKey('weekly-digest'), msg);
+    if (delivered) console.log(`📊 Sent weekly digest to ${user.email}`);
   }
 }
 
@@ -295,4 +331,5 @@ module.exports = {
   sendWeeklyDigest,
   sendEmail,
   buildDailyReport,
+  scheduledDeliveryKey,
 };

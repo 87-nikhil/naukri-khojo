@@ -1,51 +1,116 @@
 const express = require('express');
 const router  = express.Router();
 const bcrypt  = require('bcryptjs');
-const { User, Job, Resume, Report, Application } = require('./models');
-const { runJobHunt, getRunStatus, rescoreAllJobs } = require('./runner');
+const jwt = require('jsonwebtoken');
+const crypto = require('node:crypto');
+const { User, Job, Resume, Report, Application, AutomationRun, AuthRateLimit, SystemBootstrap } = require('./models');
+const { runJobHunt, getRunStatus, hasRunCapacity, rescoreAllJobs } = require('./runner');
+const { enqueueJobHunt } = require('./automationQueue');
 const { parseResume } = require('./parsers/resumeParser');
 const { authenticate, signToken } = require('./middleware/auth');
+const { JWT_SECRET } = require('./authSecret');
 const multer = require('multer');
 const path   = require('path');
 const fs     = require('fs');
 
 const upload = multer({ dest: process.env.VERCEL ? '/tmp' : 'uploads/' });
 
-// ══════════════════════════════════════════════════════════════════════════════
-// IN-MEMORY RATE LIMITER FOR AUTH ROUTES
-// ══════════════════════════════════════════════════════════════════════════════
-const authRateLimitMap = new Map();
-const AUTH_RATE_LIMIT = 10;         // max attempts
-const AUTH_RATE_WINDOW = 15 * 60 * 1000; // 15 minutes
-
-function authRateLimiter(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  const now = Date.now();
-  let entry = authRateLimitMap.get(ip);
-
-  if (!entry || now - entry.windowStart > AUTH_RATE_WINDOW) {
-    entry = { windowStart: now, count: 0 };
-    authRateLimitMap.set(ip, entry);
+function normalizeCompanyList(value) {
+  if (!Array.isArray(value) || value.length > 200 || value.some(item => typeof item !== 'string' || item.trim().length > 160)) {
+    throw new Error('Each company list must contain at most 200 names, up to 160 characters each.');
   }
-
-  entry.count++;
-  if (entry.count > AUTH_RATE_LIMIT) {
-    const retryAfter = Math.ceil((entry.windowStart + AUTH_RATE_WINDOW - now) / 1000);
-    return res.status(429).json({
-      success: false,
-      error: `Too many auth attempts. Try again in ${retryAfter} seconds.`,
-    });
+  const unique = new Map();
+  for (const raw of value) {
+    const name = raw.trim();
+    if (name && !unique.has(name.toLowerCase())) unique.set(name.toLowerCase(), name);
   }
-  next();
+  return [...unique.values()];
 }
 
-// Clean up stale entries every 30 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of authRateLimitMap) {
-    if (now - entry.windowStart > AUTH_RATE_WINDOW) authRateLimitMap.delete(ip);
+// ══════════════════════════════════════════════════════════════════════════════
+// SHARED MONGODB RATE LIMITER FOR AUTH ROUTES
+// ══════════════════════════════════════════════════════════════════════════════
+const AUTH_RATE_LIMIT = 10;         // max attempts
+const AUTH_ACCOUNT_RATE_LIMIT = 10;
+const AUTH_RATE_WINDOW = 15 * 60 * 1000; // 15 minutes
+let authRateLimitIndexPromise = null;
+
+function authRateLimitKey(scope, value) {
+  return `${scope}:${crypto.createHmac('sha256', JWT_SECRET).update(value).digest('hex')}`;
+}
+
+async function incrementAuthRateBucket(key, now) {
+  await ensureAuthRateLimitIndex();
+  const windowStartMs = Math.floor(now / AUTH_RATE_WINDOW) * AUTH_RATE_WINDOW;
+  const bucketId = `${key}:${windowStartMs}`;
+  const update = {
+    $inc: { count: 1 },
+    $setOnInsert: {
+      windowStart: new Date(windowStartMs),
+      expiresAt: new Date(windowStartMs + AUTH_RATE_WINDOW),
+    },
+  };
+  try {
+    return await AuthRateLimit.findOneAndUpdate({ _id: bucketId }, update, { upsert: true, new: true, setDefaultsOnInsert: false }).lean();
+  } catch (error) {
+    // Concurrent first requests can race to upsert the same bucket. The unique
+    // _id selects one winner; the others increment that initialized record.
+    if (error.code !== 11000) throw error;
+    return AuthRateLimit.findOneAndUpdate({ _id: bucketId }, { $inc: { count: 1 } }, { new: true }).lean();
   }
-}, 30 * 60 * 1000);
+}
+
+function authRateBucketId(key, now) {
+  return `${key}:${Math.floor(now / AUTH_RATE_WINDOW) * AUTH_RATE_WINDOW}`;
+}
+
+async function ensureAuthRateLimitIndex() {
+  if (!authRateLimitIndexPromise) {
+    authRateLimitIndexPromise = AuthRateLimit.collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+      .catch(error => { authRateLimitIndexPromise = null; throw error; });
+  }
+  await authRateLimitIndexPromise;
+}
+
+async function authRateLimiter(req, res, next) {
+  const ip = String(req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown');
+  const now = Date.now();
+  const ipKey = authRateLimitKey('ip', ip);
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
+  try {
+    const ipEntry = await incrementAuthRateBucket(ipKey, now);
+    if (ipEntry.count > AUTH_RATE_LIMIT) {
+      const retryAfter = Math.max(1, Math.ceil((ipEntry.windowStart.getTime() + AUTH_RATE_WINDOW - now) / 1000));
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({ success: false, error: `Too many auth attempts. Try again in ${retryAfter} seconds.` });
+    }
+    if (req.path.endsWith('/auth/login') && email) {
+      const accountEntry = await incrementAuthRateBucket(authRateLimitKey('account', email), now);
+      if (accountEntry.count > AUTH_ACCOUNT_RATE_LIMIT) {
+        const retryAfter = Math.max(1, Math.ceil((accountEntry.windowStart.getTime() + AUTH_RATE_WINDOW - now) / 1000));
+        res.set('Retry-After', String(retryAfter));
+        return res.status(429).json({ success: false, error: `Too many auth attempts. Try again in ${retryAfter} seconds.` });
+      }
+    }
+    return next();
+  } catch (error) {
+    console.error('Shared authentication rate limit unavailable:', error.message);
+    return res.status(503).json({ success: false, error: 'Authentication is temporarily unavailable. Please retry shortly.' });
+  }
+}
+
+async function claimFirstAdmin(userId) {
+  try {
+    return await SystemBootstrap.findOneAndUpdate(
+      { _id: 'first-admin' },
+      { $setOnInsert: { _id: 'first-admin', firstAdminUserId: userId } },
+      { upsert: true, new: true }
+    ).lean();
+  } catch (error) {
+    if (error.code !== 11000) throw error;
+    return SystemBootstrap.findById('first-admin').lean();
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // AUTH ROUTES (public — no token needed)
@@ -55,22 +120,26 @@ setInterval(() => {
 router.post('/auth/signup', authRateLimiter, async (req, res) => {
   try {
     const { email, password, name } = req.body;
-    if (!email || !password) return res.status(400).json({ success: false, error: 'Email and password required' });
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase().slice(0, 254) : '';
+    if (!normalizedEmail || typeof password !== 'string') return res.status(400).json({ success: false, error: 'Email and password required' });
     if (password.length < 6) return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
 
-    const existing = await User.findOne({ email: email.toLowerCase() });
+    const existing = await User.findOne({ email: normalizedEmail });
     if (existing) return res.status(400).json({ success: false, error: 'Email already registered' });
 
     const hash = await bcrypt.hash(password, 10);
-
-    // First user becomes admin
-    const userCount = await User.countDocuments();
+    const existingAdmin = await User.findOne({ isAdmin: true }).select('_id').lean();
     const user = await User.create({
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       password: hash,
-      name: name || '',
-      isAdmin: userCount === 0,
+      name: typeof name === 'string' ? name.trim().slice(0, 160) : '',
+      isAdmin: false,
     });
+    const bootstrap = await claimFirstAdmin(existingAdmin?._id || user._id);
+    if (!existingAdmin && bootstrap?.firstAdminUserId) {
+      await User.updateOne({ _id: bootstrap.firstAdminUserId }, { $set: { isAdmin: true } });
+      if (String(bootstrap.firstAdminUserId) === String(user._id)) user.isAdmin = true;
+    }
 
     const token = signToken(user._id);
     res.json({
@@ -79,6 +148,7 @@ router.post('/auth/signup', authRateLimiter, async (req, res) => {
       user: { id: user._id, email: user.email, name: user.name, isAdmin: user.isAdmin },
     });
   } catch (err) {
+    if (err.code === 11000 && err.keyPattern?.email) return res.status(400).json({ success: false, error: 'Email already registered' });
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -86,14 +156,20 @@ router.post('/auth/signup', authRateLimiter, async (req, res) => {
 // ── POST /api/auth/login ────────────────────────────────────────────────────
 router.post('/auth/login', authRateLimiter, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
     if (!email || !password) return res.status(400).json({ success: false, error: 'Email and password required' });
 
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
 
     const valid = await bcrypt.compare(password, user.password);
-    if (!valid) return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    if (!valid) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+    await AuthRateLimit.deleteOne({ _id: authRateBucketId(authRateLimitKey('account', email), Date.now()) });
 
     const token = signToken(user._id);
     res.json({
@@ -125,6 +201,35 @@ router.get('/auth/me', authenticate, (req, res) => {
 // ALL ROUTES BELOW REQUIRE AUTH
 // ══════════════════════════════════════════════════════════════════════════════
 router.use(authenticate);
+
+// A short-lived handoff lets the authenticated portal open its local automation worker.
+router.post('/automation/sso-ticket', async (req, res) => {
+  try {
+    if (process.env.VERCEL && !process.env.JWT_SECRET) {
+      return res.status(503).json({ success: false, error: 'Set JWT_SECRET in the hosted environment before linking the automation worker.' });
+    }
+    const resume = await Resume.findOne({ userId: req.user._id }).lean();
+    const profile = {
+      name: String(req.user.name || resume?.name || '').trim().slice(0, 160),
+      email: String(resume?.email || req.user.email || '').trim().toLowerCase().slice(0, 254),
+      accountEmail: String(req.user.email || '').trim().toLowerCase().slice(0, 254),
+      skills: Array.isArray(resume?.skills) ? resume.skills.slice(0, 100).map(value => String(value).trim().slice(0, 100)).filter(Boolean) : [],
+      experienceYears: resume?.experience != null && Number.isFinite(Number(resume.experience)) ? Number(resume.experience) : null,
+      searchKeywords: Array.isArray(resume?.roles) ? resume.roles.slice(0, 30).map(value => String(value).trim().slice(0, 120)).filter(Boolean) : [],
+    };
+    const ticket = jwt.sign({
+      purpose: 'automation-sso',
+      sub: String(req.user._id),
+      profile,
+      nonce: crypto.randomUUID(),
+    }, JWT_SECRET, { expiresIn: '90s', issuer: 'naukri-khojo', audience: 'naukri-khojo-local-automation' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, ticket, expiresIn: 90 });
+  } catch (error) {
+    console.error('Automation SSO ticket error:', error.message);
+    res.status(500).json({ success: false, error: 'Could not prepare the automation sign-in. Try again.' });
+  }
+});
 
 // ── GET /api/jobs ─────────────────────────────────────────────────────────────
 router.get('/jobs', async (req, res) => {
@@ -369,6 +474,16 @@ router.post('/resume/upload', upload.single('resume'), async (req, res) => {
 // ── POST /api/run ─────────────────────────────────────────────────────────────
 router.post('/run', async (req, res) => {
   try {
+    if (process.env.AUTOMATION_QUEUE_ENABLED === 'true') {
+      const resume = await Resume.exists({ userId: req.user._id });
+      if (!resume) return res.status(409).json({ success: false, error: 'Upload a resume before starting a job hunt.' });
+      const queued = await enqueueJobHunt(req.user._id);
+      if (!queued.accepted) {
+        return res.status(409).json({ success: false, message: queued.interactiveLeaseUntil ? 'Finish the open automation sign-in or manual browser task before starting a job hunt.' : 'A job hunt is already queued or running.', runId: queued.activeRun?._id || null });
+      }
+      return res.status(202).json({ success: true, message: 'Job hunt queued.', runId: queued.run._id, status: queued.run.status });
+    }
+
     const userMinScore = parseInt(req.body?.minScore) || 70;
 
     if (process.env.VERCEL) {
@@ -412,7 +527,8 @@ router.post('/run', async (req, res) => {
       const seen = new Set();
       const unique = allJobs.filter(j => { if (seen.has(j.jobId)) return false; seen.add(j.jobId); return true; });
 
-      const scored = matchJobs(unique, resumeProfile);
+      const fullUser = await User.findById(req.user._id);
+      const scored = matchJobs(unique, resumeProfile, fullUser?.companyPreferences);
 
       let saved = 0;
       for (const job of scored) {
@@ -427,7 +543,6 @@ router.post('/run', async (req, res) => {
       }
 
       // Use user's preference for filtering
-      const fullUser = await User.findById(req.user._id);
       const effectiveMinScore = fullUser?.notifications?.minScoreAlert || userMinScore || 65;
       const highMatch = scored.filter(j => j.matchScore >= effectiveMinScore);
       const readyToApply = highMatch.filter(j => j.directApply);
@@ -464,8 +579,9 @@ router.post('/run', async (req, res) => {
     }
 
     // Local: run full hunt in background
-    const status = getRunStatus();
-    if (status.running) return res.json({ success: false, message: 'Job hunt already running' });
+    const status = getRunStatus(req.user._id);
+    if (status.running) return res.json({ success: false, message: 'Your job hunt is already running' });
+    if (!hasRunCapacity(req.user._id)) return res.status(429).json({ success: false, error: 'The server is at its direct job-hunt capacity. Try again shortly.' });
     res.json({ success: true, message: 'Job hunt started in background' });
     runJobHunt(req.user._id, req.user.isAdmin).catch(console.error);
   } catch (err) {
@@ -475,7 +591,49 @@ router.post('/run', async (req, res) => {
 
 // ── GET /api/run/status ───────────────────────────────────────────────────────
 router.get('/run/status', (req, res) => {
-  res.json({ success: true, status: getRunStatus() });
+  if (process.env.AUTOMATION_QUEUE_ENABLED === 'true') {
+    return AutomationRun.findOne({ userId: req.user._id }).sort({ createdAt: -1 }).lean()
+      .then(run => {
+        if (!run) return res.json({ success: true, status: { running: false, step: '', progress: 0, totalSteps: 7, logs: [], lastRun: null, error: null } });
+        return res.json({ success: true, status: {
+          running: run.status === 'running' || run.status === 'queued',
+          step: run.step,
+          progress: run.progress,
+          totalSteps: 7,
+          logs: run.logs || [],
+          lastRun: run.finishedAt || null,
+          error: run.error,
+          runId: run._id,
+          runStatus: run.status,
+          queuedAt: run.createdAt,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          result: run.result || null,
+        } });
+      })
+      .catch(error => res.status(500).json({ success: false, error: error.message }));
+  }
+  res.json({ success: true, status: getRunStatus(req.user._id) });
+});
+
+router.get('/automation/runs', async (req, res) => {
+  try {
+    const runs = await AutomationRun.find({ userId: req.user._id }).sort({ createdAt: -1 }).limit(50).lean();
+    res.json({ success: true, runs });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/automation/runs/:id', async (req, res) => {
+  try {
+    if (!/^[a-f\d]{24}$/i.test(req.params.id)) return res.status(400).json({ success: false, error: 'Invalid run ID.' });
+    const run = await AutomationRun.findOne({ _id: req.params.id, userId: req.user._id }).lean();
+    if (!run) return res.status(404).json({ success: false, error: 'Run not found.' });
+    res.json({ success: true, run });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // ── PATCH /api/jobs/:id/status ────────────────────────────────────────────────
@@ -548,6 +706,7 @@ router.patch('/applications/:id', async (req, res) => {
     if (notes !== undefined) update.notes = notes;
     if (nextStep !== undefined) update.nextStep = nextStep;
     const app = await Application.findOneAndUpdate({ _id: req.params.id, userId: req.user._id }, update, { new: true });
+    if (!app) return res.status(404).json({ success: false, error: 'Application not found' });
     res.json({ success: true, application: app });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -556,7 +715,8 @@ router.patch('/applications/:id', async (req, res) => {
 
 router.delete('/applications/:id', async (req, res) => {
   try {
-    await Application.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
+    const deleted = await Application.findOneAndDelete({ _id: req.params.id, userId: req.user._id });
+    if (!deleted) return res.status(404).json({ success: false, error: 'Application not found' });
     res.json({ success: true, message: 'Application removed' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -922,7 +1082,8 @@ router.post('/naukri/sync', async (req, res) => {
     });
 
     // Score jobs
-    const scored = matchJobs(unique, resume);
+    const currentUser = await User.findById(req.user._id).select('companyPreferences').lean();
+    const scored = matchJobs(unique, resume, currentUser?.companyPreferences);
 
     // Save to DB
     let saved = 0;
@@ -951,24 +1112,47 @@ router.post('/naukri/sync', async (req, res) => {
 });
 
 // ── Company Config ──────────────────────────────────────────────────────────
-router.get('/config/companies', (req, res) => {
-  const configPath = path.join(__dirname, '../config.json');
+router.get('/config/companies', async (req, res) => {
   try {
-    const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf-8')) : { preferred: [], blocked: [] };
-    res.json({ success: true, companies: config });
+    let user = await User.findById(req.user._id).select('companyPreferences').lean();
+    let preferences = user?.companyPreferences || { preferred: [], blocked: [] };
+    const hasPreferences = preferences.preferred?.length || preferences.blocked?.length || preferences.legacyImportedAt;
+    if (!hasPreferences) {
+      // The ignored legacy config belonged to the one account bound to the local automation root.
+      // Import it only when that owner ID matches; never expose it to other portal users.
+      const localStore = require('./automation/store');
+      const owner = localStore.read('portal-owner', null);
+      const legacyPath = path.join(__dirname, '../config.json');
+      if (String(owner?.userId || '') === String(req.user._id) && fs.existsSync(legacyPath)) {
+        const legacy = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
+        preferences = {
+          preferred: normalizeCompanyList(legacy.preferred || []),
+          blocked: normalizeCompanyList(legacy.blocked || []),
+          legacyImportedAt: new Date(),
+        };
+        await User.updateOne({ _id: req.user._id }, { $set: { companyPreferences: preferences } });
+      }
+    }
+    res.json({ success: true, companies: { preferred: preferences.preferred || [], blocked: preferences.blocked || [] } });
   } catch (e) {
-    res.json({ success: true, companies: { preferred: [], blocked: [] } });
+    res.status(500).json({ success: false, error: 'Could not load company preferences.' });
   }
 });
 
-router.post('/config/companies', (req, res) => {
-  const configPath = path.join(__dirname, '../config.json');
+router.post('/config/companies', async (req, res) => {
+  let companyPreferences;
   try {
     const { preferred, blocked } = req.body;
-    fs.writeFileSync(configPath, JSON.stringify({ preferred: preferred || [], blocked: blocked || [] }, null, 2));
+    companyPreferences = { preferred: normalizeCompanyList(preferred), blocked: normalizeCompanyList(blocked), legacyImportedAt: new Date() };
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+  try {
+    const result = await User.updateOne({ _id: req.user._id }, { $set: { companyPreferences } });
+    if (!result.matchedCount) return res.status(404).json({ success: false, error: 'User account not found.' });
     res.json({ success: true, message: 'Company lists updated' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Could not save company preferences.' });
   }
 });
 

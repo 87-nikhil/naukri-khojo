@@ -43,7 +43,7 @@ test('new connector and confirmed answers resume old blocks without retrying unc
   const uncertain = { ...legacy, status: 'submission_uncertain' };
   const verification = { ...legacy, requiresVerification: true };
   const s = { jobs: [legacy, answered, unknown, uncertain, verification], answers: {} };
-  resumeResolvedBlocks(s, profile);
+  resumeResolvedBlocks(s, { ...profile, noticeDays: 30 });
   assert.equal(legacy.status, 'queued'); assert.equal(answered.status, 'queued');
   assert.equal(unknown.status, 'needs_input'); assert.equal(uncertain.status, 'submission_uncertain'); assert.equal(verification.status, 'needs_input');
   legacy.status = 'needs_input'; resumeResolvedBlocks(s, profile); assert.equal(legacy.status, 'needs_input');

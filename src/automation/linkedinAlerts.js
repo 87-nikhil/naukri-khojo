@@ -63,7 +63,7 @@ async function findOnEmployerBoard(alert, profile) {
   return null;
 }
 async function scan(profile, onProgress = store.event, { days = 7 } = {}) {
-  const credentials = store.read('email-connection', null);
+  const credentials = require('./email').credentials();
   if (!credentials) return { checked: 0 };
   const { persistJobs } = require('./discovery');
   const seen = new Set(store.read('linkedin-alerts-seen', []));

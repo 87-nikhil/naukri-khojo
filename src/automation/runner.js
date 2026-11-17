@@ -2,8 +2,15 @@ const store = require('./store');
 const { discover } = require('./discovery');
 const { evaluate, selectNext, repeatReason, APPLIED, ageDays, MAX_AGE_DAYS } = require('./matching');
 const browser = require('./browser');
-let running = false;
+const runningRoots = new Set();
+const MAX_PARALLEL_RUNS = Math.max(1, Math.min(8, Number.parseInt(process.env.AUTOMATION_MAX_PARALLEL_RUNS, 10) || 1));
 function profile() { const p = store.read('profile', null); if (!p) throw new Error('Initialize your candidate profile first'); return p; }
+async function persistJob(jobId, runFence) {
+  const userId = store.currentUserId();
+  if (process.env.AUTOMATION_QUEUE_ENABLED === 'true' && userId && require('./userData').mongoEnabled()) {
+    await require('./userData').saveAutomationJob(userId, jobId, { runFence });
+  }
+}
 function recover() { store.mutate(s => { for (const j of s.jobs) { if (['submitting', 'filling'].includes(j.status)) { j.status = 'submission_uncertain'; j.reason = 'Worker stopped during an attempt. Verify before retrying.'; } } for (const r of s.runs) if (r.status === 'running') { r.status = 'interrupted'; r.finishedAt = new Date().toISOString(); } }); }
 function todays(s) { const day = store.indiaDay(); return s.jobs.filter(j => j.status === 'submitted' && j.submittedAt && store.indiaDay(new Date(j.submittedAt)) === day); }
 // LinkedIn flagged the account for automated activity, so the worker neither searches nor applies there.
@@ -26,12 +33,18 @@ function resumeResolvedBlocks(s, p) {
     }
   }
 }
-async function run({ discovery = true, apply = true, dryRun = false, jobId, verificationCode } = {}) {
-  if (running) throw new Error('A run is already active');
-  const release = store.acquireLock(); running = true;
+async function run({ discovery = true, apply = true, dryRun = false, jobId, verificationCode, assertLease, runFence } = {}) {
+  const root = store.ROOT;
+  if (runningRoots.has(root)) throw new Error('A run is already active for this account');
+  if (runningRoots.size >= MAX_PARALLEL_RUNS) throw new Error('The automation worker is at its current capacity. Wait for an active run to finish.');
+  const release = store.acquireLock(); runningRoots.add(root);
   const id = `${Date.now()}`;
   try {
     recover();
+    const accountId = store.currentUserId();
+    if (process.env.AUTOMATION_QUEUE_ENABLED === 'true' && accountId && require('./userData').mongoEnabled()) {
+      await require('./userData').saveAutomationState(accountId, store.state(), { runFence });
+    }
     const p = profile();
     store.mutate(s => { s.runs.unshift({ id, startedAt: new Date().toISOString(), status: 'running', dryRun, target: s.settings.dailyTarget }); });
     store.event(dryRun ? 'Started form validation without submission' : 'Started daily run');
@@ -54,29 +67,33 @@ async function run({ discovery = true, apply = true, dryRun = false, jobId, veri
     const applyQueue = async () => {
       let attempts = 0;
       while (attempts < 80) {
+        if (assertLease) await assertLease();
         const s = store.state();
         if (s.settings.paused || !s.settings.autoApply || (!dryRun && todays(s).length >= s.settings.dailyTarget)) break;
         const next = selectNext(jobId ? s.jobs.filter(j => j.id === jobId) : s.jobs, todays(s), { ...p, excludedCompanies: [...p.excludedCompanies, ...s.excludedCompanies] });
         if (!next) break;
         next.match = evaluate(next, p);
         store.mutate(value => { const j = value.jobs.find(j => j.id === next.id); j.status = 'filling'; j.attempts.push({ at: new Date().toISOString(), dryRun }); });
+        await persistJob(next.id, runFence);
         store.event(`Checking application: ${next.company} — ${next.title}`);
         let result;
         // A network blip or page crash affects one job, not the whole run.
-        try { result = await browser.apply(next, p, s.answers, { dryRun, verificationCode }); }
+        try { result = await browser.apply(next, p, s.answers, { dryRun, verificationCode, assertLease }); }
         catch (error) {
           const offline = /ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ERR_CONNECTION|Timeout \d+ms exceeded/i.test(error.message);
           result = offline ? { status: 'queued', reason: `Network problem; will retry: ${error.message.split('\n')[0].slice(0, 120)}`, networkRetries: (next.networkRetries || 0) + 1 } : { status: 'needs_input', reason: error.message.split('\n')[0].slice(0, 200), questions: [] };
           if (offline && result.networkRetries > 2) result = { status: 'needs_input', reason: result.reason, questions: [] };
           if (offline) { await new Promise(r => setTimeout(r, 20000)); }
         }
+        if (assertLease) await assertLease();
         store.mutate(value => {
           Object.assign(value.jobs.find(j => j.id === next.id), result);
           // One account wall per Workday tenant: park that tenant's other queued jobs instead of hitting it again.
           if (result.requiresLogin && result.loginHost) for (const j of value.jobs) if (j.id !== next.id && j.status === 'queued' && /^https?:/.test(j.applyLink || '') && new URL(j.applyLink).hostname === result.loginHost) Object.assign(j, { status: 'needs_input', reason: result.reason, requiresLogin: true, loginHost: result.loginHost, questions: [] });
           if (result.requiresVerification) for (const j of value.jobs) if (j.company === next.company && j.status === 'queued') { j.status = 'needs_input'; j.reason = 'Company application portal needs manual verification before automatic applications can continue'; j.requiresVerification = true; j.questions = []; }
         });
-        require('./reports').save();
+        await persistJob(next.id);
+        await require('./reports').save(undefined, undefined, { share: true });
         store.event(`${next.company}: ${result.status}${result.reason ? ` — ${result.reason}` : ''}`);
         attempts++;
         if (dryRun || jobId) break;
@@ -107,6 +124,6 @@ async function run({ discovery = true, apply = true, dryRun = false, jobId, veri
     store.event(`Daily result: ${confirmed}/${summary.target} confirmed submissions; ${summary.needsInput} need input`);
     return summary;
   } catch (error) { store.mutate(s => { const r = s.runs.find(r => r.id === id); if (r) Object.assign(r, { status: 'failed', error: error.message, finishedAt: new Date().toISOString() }); }); store.event(`Run failed: ${error.message}`); throw error; }
-  finally { try { require('./reports').save(); } finally { running = false; release(); } }
+  finally { try { await require('./reports').save(undefined, undefined, { share: true }); } finally { runningRoots.delete(root); release(); } }
 }
-module.exports = { run, profile, recover, todays, resumeResolvedBlocks, isRunning: () => running };
+module.exports = { run, profile, recover, todays, resumeResolvedBlocks, isRunning: () => runningRoots.has(store.ROOT), hasCapacity: () => runningRoots.size < MAX_PARALLEL_RUNS, maxParallelRuns: MAX_PARALLEL_RUNS };

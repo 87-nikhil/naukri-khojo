@@ -4,25 +4,39 @@ const { chromium } = require('playwright');
 const store = require('./store');
 const { resolve, normalize } = require('./answers');
 const { detectATS, safeUrl } = require('./discovery');
-let context;
-let contextHeadless;
-let contextMode;
+const contexts = new Map();
+const launchingContexts = new Map();
 // Modes: 'headless' (default), 'offscreen' (a real window parked off-screen, for portals that refuse headless browsers;
 // used only inside the quiet hours), 'window' (explicit dashboard sign-in).
 async function browser({ interactive = false, offscreen = false } = {}) {
+  const root = store.ROOT;
   const mode = interactive ? 'window' : offscreen ? 'offscreen' : 'headless';
   const headless = mode === 'headless';
-  if (context && contextMode !== mode) await context.close();
-  if (!context) {
-    context = await chromium.launchPersistentContext(path.join(store.ROOT, 'browser'), {
+  let entry = contexts.get(root);
+  if (entry && entry.mode !== mode) {
+    contexts.delete(root);
+    await entry.context.close();
+    entry = null;
+  }
+  if (entry) return entry.context;
+  if (launchingContexts.has(root)) {
+    await launchingContexts.get(root);
+    return browser({ interactive, offscreen });
+  }
+  const launch = (async () => {
+    const context = await chromium.launchPersistentContext(path.join(root, 'browser'), {
       channel: process.env.AUTOMATION_BROWSER_CHANNEL || 'chrome', headless,
       args: mode === 'offscreen' ? ['--window-position=-2400,0'] : [],
       viewport: { width: 1280, height: 900 }, acceptDownloads: false,
     });
-    context.on('close', () => { context = null; });
-    contextHeadless = headless; contextMode = mode;
-  }
-  return context;
+    const opened = { context, headless, mode };
+    contexts.set(root, opened);
+    context.on('close', () => { if (contexts.get(root)?.context === context) contexts.delete(root); });
+    return context;
+  })();
+  launchingContexts.set(root, launch);
+  try { return await launch; }
+  finally { if (launchingContexts.get(root) === launch) launchingContexts.delete(root); }
 }
 // Portals that block headless browsers run only inside these hours (IST), so no window appears while the user works.
 function quietHours(settings = store.state().settings) {
@@ -125,8 +139,10 @@ async function fill(page, field, answer, profile) {
   if (field.type === 'file') {
     if (!/resume|cv|curriculum/i.test(field.label)) return false;
     if (field.accept && !/docx|officedocument|application\/msword|\.doc\b|\*/i.test(field.accept)) return false;
-    const resumePath = path.join(store.ROOT, profile.resumeFile);
-    if (!fs.existsSync(resumePath)) throw new Error('Saved resume file is missing');
+    const files = require('./userFiles');
+    const resumePath = await files.ensureLocalFile(profile.resumeFile, 'resume');
+    if (!resumePath) throw new Error('Saved resume file is missing');
+    await files.ensureSharedFile(profile.resumeFile, 'resume');
     await el.setInputFiles(resumePath); return true;
   }
   if (!answer) return false;
@@ -184,9 +200,12 @@ async function fill(page, field, answer, profile) {
   return true;
 }
 async function screenshot(page, job, suffix) {
-  const dir = path.join(store.ROOT, 'evidence'); fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const name = `${job.id}-${Date.now()}-${suffix}.png`;
-  try { await page.screenshot({ path: path.join(dir, name), fullPage: true, timeout: 5000, animations: 'disabled', mask: [page.locator('input[id^="security-input"], input[autocomplete="one-time-code"], input[type="password"]')] }); return name; }
+  try {
+    const buffer = await page.screenshot({ fullPage: true, timeout: 5000, animations: 'disabled', mask: [page.locator('input[id^="security-input"], input[autocomplete="one-time-code"], input[type="password"]')] });
+    await require('./userFiles').saveFile(name, 'evidence', buffer, 'image/png');
+    return name;
+  }
   catch (error) { store.event(`Screenshot unavailable for ${job.company}: ${error.message.split('\n')[0]}`); return null; }
 }
 async function confirmation(page, ats) {
@@ -201,7 +220,7 @@ async function confirmation(page, ats) {
   const match = text.match(phrases[ats] || /a^/);
   return match ? { text: match[0], url: page.url(), at: new Date().toISOString() } : null;
 }
-async function apply(job, profile, saved, { dryRun = false, interactive = false, verificationCode } = {}) {
+async function apply(job, profile, saved, { dryRun = false, interactive = false, verificationCode, assertLease } = {}) {
   let connector = detectATS(job.applyLink);
   let formLink = job.applyLink;
   if (job.ats === 'greenhouse' && /^greenhouse:[a-z0-9_-]+:\d+$/i.test(job.requisitionId || '')) {
@@ -301,6 +320,7 @@ async function apply(job, profile, saved, { dryRun = false, interactive = false,
     if (before) return { status: 'submission_uncertain', reason: 'Page already shows a confirmation; verify previous submission before retrying' };
     const submit = page.getByRole('button', { name: /^(submit application|submit|send application|apply for this job)$/i });
     if (!await submit.count() || !await submit.first().isVisible() || !await submit.first().isEnabled()) return { status: 'needs_input', reason: 'No supported final Submit button found', questions: [], evidence: await screenshot(page, job, 'submit-button') };
+    if (assertLease) await assertLease();
     store.mutate(s => { const current = s.jobs.find(j => j.id === job.id); current.status = 'submitting'; current.usedAnswers = usedAnswers; current.lastAttemptAt = new Date().toISOString(); });
     clickedSubmit = true;
     await submit.first().click({ timeout: 15000 });
@@ -318,6 +338,7 @@ async function apply(job, profile, saved, { dryRun = false, interactive = false,
         if (!/^[A-Za-z0-9]{8}$/.test(code)) throw new Error('The email security code must be 8 characters');
         for (let k = 0; k < 8; k++) await codeInputs.nth(k).fill(code[k]);
         usedCode = true; usedCodeValue = code;
+        if (assertLease) await assertLease();
         await submit.first().click();
         // The receipt check continues; do not persist the code as an answer.
       }
@@ -346,5 +367,9 @@ async function apply(job, profile, saved, { dryRun = false, interactive = false,
     if (!interactive) await page.close().catch(() => {});
   }
 }
-async function close() { const previous = context; context = null; if (previous) await previous.close(); }
-module.exports = { apply, open, fields, fill, setChoice, optionMatch, confirmation, close, quietHours, screenshot, isBackground: () => !!context && contextHeadless === true };
+async function close() {
+  const entries = [...contexts.values()];
+  contexts.clear();
+  await Promise.allSettled(entries.map(entry => entry.context.close()));
+}
+module.exports = { apply, open, fields, fill, setChoice, optionMatch, confirmation, close, quietHours, screenshot, isBackground: () => contexts.get(store.ROOT)?.headless === true };
