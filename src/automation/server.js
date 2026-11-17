@@ -541,6 +541,9 @@ app.patch('/api/settings', (req, res) => {
   if (dailyTarget !== undefined && (!Number.isInteger(dailyTarget) || dailyTarget < 15 || dailyTarget > 100)) return res.status(400).json({ error: 'Daily target must be an integer between 15 and 100' });
   store.mutate(s => { if (typeof paused === 'boolean') s.settings.paused = paused; if (typeof autoApply === 'boolean') s.settings.autoApply = autoApply; if (dailyTarget !== undefined) s.settings.dailyTarget = dailyTarget; });
   res.json({ ok: true });
+  if (req.portalAccount?.userId && process.env.AUTOMATION_QUEUE_ENABLED !== 'true') {
+    userData.saveAutomationState(req.portalAccount.userId, store.state()).catch(() => {});
+  }
 });
 app.post('/api/exclusions', (req, res) => {
   if (!Array.isArray(req.body.companies) || req.body.companies.some(c => typeof c !== 'string' || c.length > 100)) return res.status(400).json({ error: 'Provide company names' });
