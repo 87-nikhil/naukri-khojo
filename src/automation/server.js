@@ -767,12 +767,16 @@ function start() {
     ? require('../../scripts/automation-worker.cjs')
     : null;
   if (queueWorker) queueWorker.start({ types: ['job-hunt', 'browser-automation'], workerId: automationInstanceId }).catch(error => console.error('Automation queue worker stopped:', error.message));
-  const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`Naukri Khojo daily applications: http://127.0.0.1:${PORT}`);
-    console.log('Schedule: 8:00 AM IST. Keep this worker running and your Mac awake.');
-    console.log('Applications run silently in a headless browser. Interactive windows open only on your explicit dashboard action.');
-    if (process.argv.includes('--run-today')) dispatchDailyForAll(true).catch(e => console.error(e.message));
-  });
+  // Note: do NOT call app.listen() here; the main app will listen on its own port.
+  // If start() is called directly (e.g. `node src/automation/server.js`), it will listen on PORT.
+  if (require.main === module) {
+    const server = app.listen(PORT, '127.0.0.1', () => {
+      console.log(`Naukri Khojo daily applications: http://127.0.0.1:${PORT}`);
+      console.log('Schedule: 8:00 AM IST. Keep this worker running and your Mac awake.');
+      console.log('Applications run silently in a headless browser. Interactive windows open only on your explicit dashboard action.');
+      if (process.argv.includes('--run-today')) dispatchDailyForAll(true).catch(e => console.error(e.message));
+    });
+  }
   // Track employer replies every 30 minutes while the worker is up.
   cron.schedule('*/30 * * * *', async () => {
     for (const userId of accountScopes()) await withAccountScope(userId, async () => {

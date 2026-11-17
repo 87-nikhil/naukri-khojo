@@ -11,6 +11,7 @@ const { getMongoOptions } = require('./mongoOptions');
 const cors      = require('cors');
 const path      = require('path');
 const routes    = require('./routes');
+const automationApp = require('./automation/server').app;
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -57,6 +58,9 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 app.use('/api', routes);
+
+// ── Automation API Routes (mounted under /automation) ────────────────────────
+app.use('/automation', automationApp);
 
 // ── Telegram Webhook (public endpoint — Telegram sends updates here) ─────────
 app.post('/api/telegram/webhook', async (req, res) => {
