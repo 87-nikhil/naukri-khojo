@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Naukri Khojo · Hosted browser</title>
+  <style>
+    :root{color-scheme:dark;font:15px system-ui,sans-serif;background:#101827;color:#e8eef8}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column}
+    header{display:flex;align-items:center;gap:14px;padding:12px 16px;background:#18243a;border-bottom:1px solid #34445e}
+    h1{font-size:16px;margin:0 auto 0 0}button{border:1px solid #485b78;border-radius:8px;background:#263751;color:#fff;padding:8px 12px;cursor:pointer}
+    #status{font-size:13px;color:#b6c5db}main{flex:1;display:grid;place-items:center;padding:12px;overflow:auto}
+    #screen{display:block;max-width:min(100%,1280px);max-height:calc(100vh - 105px);object-fit:contain;box-shadow:0 8px 30px #0008;cursor:default;user-select:none;-webkit-user-drag:none}
+    #help{padding:8px 16px;color:#aab9cf;text-align:center;font-size:12px}
+  </style>
+</head>
+<body>
+  <header><h1>Hosted browser</h1><span id="status">Connecting…</span><button id="refresh" type="button">Refresh</button></header>
+  <main><img id="screen" alt="Hosted browser screen; click to interact"></main>
+  <div id="help">Click the page, type to enter text, press Enter or Tab as needed, and use the mouse wheel to scroll. This view is private to your signed-in account.</div>
+  <script>
+    const TOKEN='__LOCAL_TOKEN__';
+    const session=sessionStorage.getItem('nkp_automation_session')||'';
+    const headers={'X-Naukri-Khojo-Token':TOKEN};
+    if(session)headers.Authorization='Bearer '+session;
+    const image=document.getElementById('screen'), status=document.getElementById('status');
+    let polling=false, objectUrl='', inputQueue=Promise.resolve();
+    async function snapshot(){
+      if(polling)return;polling=true;
+      try{
+        const response=await fetch('/api/browser/screenshot',{headers,cache:'no-store'});
+        if(response.status===204){status.textContent='Waiting for a browser page…';image.removeAttribute('src');lastUrl='';return;}
+        if(!response.ok)throw Error(response.status===401?'Session expired. Reopen Daily Auto Hunt.':'Browser view unavailable.');
+        const blob=await response.blob(), next=URL.createObjectURL(blob);
+        if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=next;image.src=next;status.textContent='Connected · updates every second';
+      }catch(error){status.textContent=error.message;}
+      finally{polling=false;}
+    }
+    function point(event){const r=image.getBoundingClientRect();return{x:Math.round((event.clientX-r.left)*image.naturalWidth/r.width),y:Math.round((event.clientY-r.top)*image.naturalHeight/r.height)};}
+    function input(body){inputQueue=inputQueue.then(async()=>{try{const response=await fetch('/api/browser/input',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(body)});if(!response.ok)status.textContent=response.status===401?'Session expired. Reopen Daily Auto Hunt.':'Input was not accepted.';}catch{status.textContent='Could not send browser input.';}});return inputQueue;}
+    image.addEventListener('click',event=>{if(!image.naturalWidth)return;input({type:'click',...point(event)});});
+    image.addEventListener('wheel',event=>{if(!image.naturalWidth)return;event.preventDefault();input({type:'wheel',...point(event),deltaY:Math.max(-1200,Math.min(1200,event.deltaY))});},{passive:false});
+    window.addEventListener('keydown',event=>{
+      if(event.ctrlKey||event.metaKey||event.altKey)return;
+      if(event.key.length===1){event.preventDefault();input({type:'text',text:event.key});return;}
+      if(['Enter','Tab','Escape','Backspace','Delete','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown'].includes(event.key)){event.preventDefault();input({type:'key',key:event.key});}
+    });
+    document.getElementById('refresh').addEventListener('click',snapshot);
+    snapshot();setInterval(snapshot,1000);
+  </script>
+</body>
+</html>

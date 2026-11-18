@@ -56,6 +56,38 @@ async function open(url, options = {}) {
   if (options.interactive) await page.bringToFront();
   return page;
 }
+function interactivePage() {
+  const entry = contexts.get(store.ROOT);
+  if (!entry || entry.mode !== 'window') return null;
+  return [...entry.context.pages()].reverse().find(page => !page.isClosed()) || null;
+}
+async function interactiveScreenshot() {
+  const page = interactivePage();
+  if (!page) return null;
+  return page.screenshot({ timeout: 5000, animations: 'disabled' });
+}
+async function interactiveAction(action) {
+  const page = interactivePage();
+  if (!page) throw new Error('No interactive browser window is open.');
+  const viewport = page.viewportSize() || { width: 1280, height: 900 };
+  if (action.type === 'click') {
+    if (!Number.isFinite(action.x) || !Number.isFinite(action.y) || action.x < 0 || action.y < 0 || action.x >= viewport.width || action.y >= viewport.height) throw new Error('Click is outside the browser window.');
+    await page.mouse.click(action.x, action.y);
+  } else if (action.type === 'wheel') {
+    const x = Math.max(0, Math.min(viewport.width - 1, Number(action.x) || 0));
+    const y = Math.max(0, Math.min(viewport.height - 1, Number(action.y) || 0));
+    const deltaY = Math.max(-1200, Math.min(1200, Number(action.deltaY) || 0));
+    await page.mouse.move(x, y); await page.mouse.wheel(0, deltaY);
+  } else if (action.type === 'text') {
+    if (typeof action.text !== 'string' || action.text.length > 500) throw new Error('Text input is invalid.');
+    await page.keyboard.insertText(action.text);
+  } else if (action.type === 'key') {
+    const allowed = new Set(['Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', ' ']);
+    if (!allowed.has(action.key)) throw new Error('Keyboard key is not supported.');
+    await page.keyboard.press(action.key);
+  } else throw new Error('Browser action is not supported.');
+  return { ok: true };
+}
 async function fields(page, rootSelector = '') {
   return page.evaluate(rootSelector => {
     const root = rootSelector ? document.querySelector(rootSelector) : document;
@@ -372,4 +404,4 @@ async function close() {
   contexts.clear();
   await Promise.allSettled(entries.map(entry => entry.context.close()));
 }
-module.exports = { apply, open, fields, fill, setChoice, optionMatch, confirmation, close, quietHours, screenshot, isBackground: () => contexts.get(store.ROOT)?.headless === true };
+module.exports = { apply, open, interactivePage, interactiveScreenshot, interactiveAction, fields, fill, setChoice, optionMatch, confirmation, close, quietHours, screenshot, isBackground: () => contexts.get(store.ROOT)?.headless === true };

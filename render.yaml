@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: naukri-khojo-automation
+    runtime: docker
+    plan: 1c-2g
+    region: singapore
+    dockerfilePath: ./Dockerfile.automation
+    dockerContext: .
+    healthCheckPath: /healthz
+    disk:
+      name: automation-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTOMATION_HOST
+        value: 0.0.0.0
+      - key: AUTOMATION_DATA_DIR
+        value: /var/data
+      - key: AUTOMATION_REMOTE_BROWSER
+        value: "true"
+      - key: AUTOMATION_QUEUE_ENABLED
+        value: "false"
+      - key: AUTOMATION_BROWSER_CHANNEL
+        value: chromium
+      - key: AUTOMATION_INSTANCE_ID
+        value: automation-render-1
+      - key: AUTOMATION_RUN_LEASE_MS
+        value: "90000"
+      - key: AUTOMATION_GLOBAL_MAX_RUNS
+        value: "1"
+      - key: AUTOMATION_PUBLIC_URL
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: AUTOMATION_CREDENTIAL_KEY
+        sync: false

@@ -24,7 +24,15 @@ function isRunning() { return runner.isRunning() || store.workerActive(); }
 function hasRunnableProfile(profile = store.read('profile', null)) {
   return !!(profile?.name && profile?.email && profile?.resumeFile && Array.isArray(profile.cities) && profile.cities.length);
 }
-const PORT = Number(process.env.AUTOMATION_PORT || 4129);
+const HOST = process.env.AUTOMATION_HOST || '127.0.0.1';
+const PORT = Number(HOST === '0.0.0.0' ? (process.env.PORT || process.env.AUTOMATION_PORT || 4129) : (process.env.AUTOMATION_PORT || 4129));
+let automationPublicHost = '';
+if (process.env.AUTOMATION_PUBLIC_URL) {
+  const publicUrl = new URL(process.env.AUTOMATION_PUBLIC_URL);
+  if (publicUrl.protocol !== 'https:' || publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash || publicUrl.username || publicUrl.password) throw new Error('AUTOMATION_PUBLIC_URL must be an HTTPS origin without a path, query, or credentials.');
+  automationPublicHost = publicUrl.host.toLowerCase();
+}
+if (process.env.AUTOMATION_REMOTE_BROWSER === 'true' && !automationPublicHost) throw new Error('AUTOMATION_PUBLIC_URL must be set when the hosted browser is enabled.');
 const INTERACTIVE_LEASE_MS = Math.max(60_000, Number(process.env.AUTOMATION_INTERACTIVE_LEASE_MS) || 30 * 60_000);
 const automationInstanceId = process.env.AUTOMATION_INSTANCE_ID || `${require('node:os').hostname()}-${crypto.createHash('sha256').update(store.BASE_ROOT).digest('hex').slice(0, 24)}`;
 if (!/^[a-z\d_.:-]{1,160}$/i.test(automationInstanceId)) throw new Error('AUTOMATION_INSTANCE_ID must use letters, numbers, dots, underscores, colons, or hyphens (max 160 characters).');
@@ -88,17 +96,20 @@ function browserLeaseKey(req) {
 const app = express();
 app.disable('x-powered-by');
 app.use((req, res, next) => {
-  if (!['127.0.0.1', 'localhost'].includes(req.hostname)) return res.sendStatus(403);
+  const host = String(req.get('host') || '').toLowerCase();
+  const localHost = ['127.0.0.1', 'localhost'].includes(req.hostname);
+  const hostedHost = !!automationPublicHost && host === automationPublicHost && req.get('x-forwarded-proto') === 'https';
+  if (req.path !== '/healthz' && !localHost && !hostedHost) return res.sendStatus(403);
   res.set('Cache-Control', 'no-store');
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('X-Frame-Options', 'DENY');
   res.set('Referrer-Policy', 'no-referrer');
-  if (!['GET', 'HEAD'].includes(req.method) && req.get('X-Naukri-Khojo-Token') !== token) return res.status(403).json({ error: 'Open the local dashboard to perform this action' });
+  if (!['GET', 'HEAD'].includes(req.method) && req.get('X-Naukri-Khojo-Token') !== token) return res.status(403).json({ error: 'Use the signed-in automation dashboard to perform this action' });
   next();
 });
 app.use(express.json({ limit: '100kb' }));
 app.use((req, res, next) => {
-  const protectedResource = req.path.startsWith('/api/') || req.path.startsWith('/reports/') || req.path.startsWith('/evidence/');
+  const protectedResource = req.path.startsWith('/api/') || req.path.startsWith('/reports/') || req.path.startsWith('/evidence/') || req.path === '/remote-browser';
   if (!protectedResource || (req.method === 'POST' && req.path === '/api/session/accept')) return next();
   const bearer = req.get('Authorization') || '';
   const cookieToken = (req.headers.cookie || '').match(/(?:^|;\s*)automation_session=([^;]+)/)?.[1] || '';
@@ -147,7 +158,7 @@ app.use(async (req, res, next) => {
   } catch (error) { next(error); }
 });
 app.use((req, res, next) => {
-  if (!['GET', 'HEAD'].includes(req.method) && !req.path.startsWith('/api/session/')) {
+  if (!['GET', 'HEAD'].includes(req.method) && !req.path.startsWith('/api/session/') && req.path !== '/api/browser/input') {
     res.on('finish', () => {
       try {
         const save = () => require('./reports').save(undefined, undefined, { share: true });
@@ -158,9 +169,31 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.get('/healthz', (req, res) => res.json({ ok: true }));
 app.get('/', (req, res) => {
-  const html = fs.readFileSync(path.join(__dirname, '../../public/automation.html'), 'utf8').replace('__LOCAL_TOKEN__', token);
+  const html = fs.readFileSync(path.join(__dirname, '../../public/automation.html'), 'utf8')
+    .replace('__LOCAL_TOKEN__', token)
+    .replace('__REMOTE_BROWSER_ENABLED__', process.env.AUTOMATION_REMOTE_BROWSER === 'true' ? 'true' : 'false');
   res.type('html').send(html);
+});
+app.get('/remote-browser', (req, res) => {
+  if (process.env.AUTOMATION_REMOTE_BROWSER !== 'true') return res.sendStatus(404);
+  const html = fs.readFileSync(path.join(__dirname, '../../public/remote-browser.html'), 'utf8').replace('__LOCAL_TOKEN__', token);
+  res.type('html').send(html);
+});
+app.get('/api/browser/screenshot', async (req, res, next) => {
+  try {
+    if (process.env.AUTOMATION_REMOTE_BROWSER !== 'true') return res.sendStatus(404);
+    const screenshot = await browser.interactiveScreenshot();
+    if (!screenshot) return res.sendStatus(204);
+    res.set('Cache-Control', 'no-store').type('image/png').send(screenshot);
+  } catch (error) { next(error); }
+});
+app.post('/api/browser/input', async (req, res, next) => {
+  try {
+    if (process.env.AUTOMATION_REMOTE_BROWSER !== 'true') return res.sendStatus(404);
+    res.json(await browser.interactiveAction(req.body || {}));
+  } catch (error) { next(error); }
 });
 app.post('/api/session/accept', async (req, res) => {
   let signInLeaseKey = null;
@@ -242,12 +275,12 @@ app.post('/api/session/accept', async (req, res) => {
       await releaseInteractiveBrowser(claims.sub, signInLeaseKey);
       signInLeaseKey = null;
     }
-    res.setHeader('Set-Cookie', `automation_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`);
+    res.setHeader('Set-Cookie', `automation_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${automationPublicHost ? '; Secure' : ''}`);
     res.json({ ok: true, sessionToken, expiresIn: 43200, account, profileSynced: true });
     });
   } catch (error) {
     if (error.name === 'TokenExpiredError') return res.status(401).json({ error: 'The sign-in link expired. Open automation from the signed-in main portal again.' });
-    if (error.name === 'JsonWebTokenError' || error.name === 'NotBeforeError') return res.status(401).json({ error: 'The portal and local worker signing keys do not match. Set the same JWT_SECRET in both environments, restart them, and open automation again.' });
+    if (error.name === 'JsonWebTokenError' || error.name === 'NotBeforeError') return res.status(401).json({ error: 'The portal and automation worker signing keys do not match. Set the same JWT_SECRET in both environments, restart them, and open automation again.' });
     console.error('Automation portal sign-in failed:', error.message);
     res.status(500).json({ error: 'Could not sign in to automation. Try opening it again from the main portal.' });
   } finally {
@@ -759,7 +792,7 @@ async function dispatchDailyForAll(force = false) {
     catch (error) { console.error(`Scheduled automation run failed${userId ? ` for account ${userId}` : ''}:`, error.message); }
   }
 }
-function start() {
+function start({ listen = require.main === module } = {}) {
   if (process.env.AUTOMATION_QUEUE_ENABLED === 'true' && !process.env.MONGODB_URI) throw new Error('MONGODB_URI is required when AUTOMATION_QUEUE_ENABLED=true.');
   if (process.env.AUTOMATION_QUEUE_ENABLED === 'true' && !require('./secrets').isConfigured()) throw new Error('AUTOMATION_CREDENTIAL_KEY (at least 32 bytes) is required when the durable automation queue is enabled.');
   try { require('node:os').setPriority(process.pid, 10); } catch { /* best effort on supported platforms */ }
@@ -767,12 +800,11 @@ function start() {
     ? require('../../scripts/automation-worker.cjs')
     : null;
   if (queueWorker) queueWorker.start({ types: ['job-hunt', 'browser-automation'], workerId: automationInstanceId }).catch(error => console.error('Automation queue worker stopped:', error.message));
-  // Note: do NOT call app.listen() here; the main app will listen on its own port.
-  // If start() is called directly (e.g. `node src/automation/server.js`), it will listen on PORT.
-  if (require.main === module) {
-    const server = app.listen(PORT, '127.0.0.1', () => {
-      console.log(`Naukri Khojo daily applications: http://127.0.0.1:${PORT}`);
-      console.log('Schedule: 8:00 AM IST. Keep this worker running and your Mac awake.');
+  // The portal imports this Express app under /automation; standalone hosts can opt in to listening.
+  if (listen) {
+    const server = app.listen(PORT, HOST, () => {
+      console.log(`Naukri Khojo automation service: http://${HOST}:${PORT}`);
+      console.log('Schedule: 8:00 AM IST. Keep this worker service running.');
       console.log('Applications run silently in a headless browser. Interactive windows open only on your explicit dashboard action.');
       if (process.argv.includes('--run-today')) dispatchDailyForAll(true).catch(e => console.error(e.message));
     });

@@ -1385,6 +1385,7 @@ async function doSignup() {
 }
 
 let automationWindow = null;
+let automationOrigin = null;
 
 async function openAutomationPortal(event) {
   event?.preventDefault();
@@ -1394,7 +1395,10 @@ async function openAutomationPortal(event) {
     const response = await fetch('/api/automation/sso-ticket', { method: 'POST' });
     const data = await response.json();
     if (!response.ok || !data.success) throw new Error(data.error || 'Could not sign in to automation.');
-    automationWindow.location.replace('http://127.0.0.1:4129/#sso=' + encodeURIComponent(data.ticket));
+    const automationUrl = new URL(data.automationUrl || 'http://127.0.0.1:4129');
+    automationOrigin = automationUrl.origin;
+    automationUrl.hash = 'sso=' + encodeURIComponent(data.ticket);
+    automationWindow.location.replace(automationUrl.href);
   } catch (error) {
     automationWindow.close();
     automationWindow = null;
@@ -1404,9 +1408,10 @@ async function openAutomationPortal(event) {
 
 function doLogout() {
   if (automationWindow && !automationWindow.closed) {
-    try { automationWindow.postMessage({ type: 'naukri-khojo-logout' }, 'http://127.0.0.1:4129'); } catch {}
+    try { automationWindow.postMessage({ type: 'naukri-khojo-logout' }, automationOrigin || '*'); } catch {}
     automationWindow.close();
     automationWindow = null;
+    automationOrigin = null;
   }
   localStorage.removeItem('jh_token');
   localStorage.removeItem('jh_name');

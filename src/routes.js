@@ -202,7 +202,7 @@ router.get('/auth/me', authenticate, (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 router.use(authenticate);
 
-// A short-lived handoff lets the authenticated portal open its local automation worker.
+// A short-lived handoff lets the authenticated portal open its automation worker.
 router.post('/automation/sso-ticket', async (req, res) => {
   try {
     if (process.env.VERCEL && !process.env.JWT_SECRET) {
@@ -224,7 +224,16 @@ router.post('/automation/sso-ticket', async (req, res) => {
       nonce: crypto.randomUUID(),
     }, JWT_SECRET, { expiresIn: '90s', issuer: 'naukri-khojo', audience: 'naukri-khojo-local-automation' });
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, ticket, expiresIn: 90 });
+    const configuredAutomationUrl = process.env.AUTOMATION_PUBLIC_URL;
+    let automationUrl = 'http://127.0.0.1:4129';
+    if (configuredAutomationUrl) {
+      const target = new URL(configuredAutomationUrl);
+      if (target.protocol !== 'https:' || target.pathname !== '/' || target.search || target.hash || target.username || target.password) {
+        return res.status(503).json({ success: false, error: 'AUTOMATION_PUBLIC_URL must be an HTTPS origin without a path, query, or credentials.' });
+      }
+      automationUrl = target.origin;
+    }
+    res.json({ success: true, ticket, expiresIn: 90, automationUrl });
   } catch (error) {
     console.error('Automation SSO ticket error:', error.message);
     res.status(500).json({ success: false, error: 'Could not prepare the automation sign-in. Try again.' });
