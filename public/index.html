@@ -1395,7 +1395,7 @@ async function openAutomationPortal(event) {
     const response = await fetch('/api/automation/sso-ticket', { method: 'POST' });
     const data = await response.json();
     if (!response.ok || !data.success) throw new Error(data.error || 'Could not sign in to automation.');
-    const automationUrl = new URL(data.automationUrl || 'http://127.0.0.1:4129');
+    const automationUrl = new URL(data.automationUrl || 'http://localhost:4129');
     automationOrigin = automationUrl.origin;
     automationUrl.hash = 'sso=' + encodeURIComponent(data.ticket);
     automationWindow.location.replace(automationUrl.href);

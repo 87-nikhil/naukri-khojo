@@ -1,17 +1,10 @@
 require('dotenv').config();
-// Personal local mode runs without MongoDB after a confirmed profile has been initialized.
-if (!process.env.VERCEL && !process.env.MONGODB_URI && require('fs').existsSync(require('path').join(__dirname, '../.automation/profile.json'))) {
-  module.exports = require('./automation/server');
-  if (require.main === module) module.exports.start();
-  return;
-}
 const express   = require('express');
 const mongoose  = require('mongoose');
 const { getMongoOptions } = require('./mongoOptions');
 const cors      = require('cors');
 const path      = require('path');
 const routes    = require('./routes');
-const automationApp = require('./automation/server').app;
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -58,9 +51,6 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 app.use('/api', routes);
-
-// ── Automation API Routes (mounted under /automation) ────────────────────────
-app.use('/automation', automationApp);
 
 // ── Telegram Webhook (public endpoint — Telegram sends updates here) ─────────
 app.post('/api/telegram/webhook', async (req, res) => {

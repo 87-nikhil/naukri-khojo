@@ -225,7 +225,7 @@ router.post('/automation/sso-ticket', async (req, res) => {
     }, JWT_SECRET, { expiresIn: '90s', issuer: 'naukri-khojo', audience: 'naukri-khojo-local-automation' });
     res.set('Cache-Control', 'no-store');
     const configuredAutomationUrl = process.env.AUTOMATION_PUBLIC_URL;
-    let automationUrl = 'http://127.0.0.1:4129';
+    let automationUrl = 'http://localhost:4129';
     if (configuredAutomationUrl) {
       const target = new URL(configuredAutomationUrl);
       if (target.protocol !== 'https:' || target.pathname !== '/' || target.search || target.hash || target.username || target.password) {
