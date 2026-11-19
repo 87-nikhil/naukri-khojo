@@ -4,7 +4,7 @@ const SKILLS = [
   'JavaScript', 'TypeScript', 'Node.js', 'Express.js', 'React', 'Next.js', 'Angular', 'AngularJS',
   'HTML', 'CSS', 'SCSS', 'Redux', 'Redux Toolkit', 'RxJS', 'NgRx', 'GraphQL', 'REST APIs',
   'WebSockets', 'Microfrontends', 'Module Federation', 'AWS', 'Docker', 'Kubernetes', 'MongoDB',
-  'PostgreSQL', 'MySQL', 'Java', 'Python', 'Spring Boot', 'Playwright', 'Jest', 'Git', 'CI/CD',
+  'PostgreSQL', 'MySQL', 'Python', 'Playwright', 'Jest', 'Git', 'CI/CD',
   'Webpack', 'Vite', 'Nx', 'Storybook', 'Figma', 'Electron', 'Tailwind CSS', 'Material UI', 'Bootstrap',
 ];
 const CITIES = ['Pune', 'Bengaluru', 'Bangalore', 'Mumbai', 'Hyderabad', 'Chennai', 'Delhi', 'Gurugram', 'Gurgaon', 'Noida', 'Indore', 'Jaipur', 'Kolkata', 'Ahmedabad', 'Kochi'];

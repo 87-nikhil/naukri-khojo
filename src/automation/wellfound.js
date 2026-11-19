@@ -37,7 +37,7 @@ async function discover(profile, onProgress = store.event, { limit = 60 } = {}) 
         });
         const [, title, company] = d.titleLine.match(/^(.*) at (.*)$/) || [null, d.titleLine, ''];
         if (!title || !company || d.applied || d.external) continue;
-        if (!/backend|back.end|java|spring|kotlin|software engineer|sde/i.test(title)) continue;
+        if (!/backend|back.end|node|next\.?js|angular|react|software engineer|sde/i.test(title)) continue;
         const salary = lpa((d.text.match(/₹\s?[\d.]+L\s*[–-]\s*₹\s?[\d.]+L/) || [''])[0]);
         const location = (d.text.match(/Location\s*\n([^\n]+)/) || [, ''])[1] + (/(?:Remote|Hires remotely) [^\n]*India/i.test(d.text) ? ' · Remote (India)' : '');
         const c = companyFor(company) || { name: company, category: 'unlisted', categorySource: '' };

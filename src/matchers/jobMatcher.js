@@ -23,7 +23,7 @@ function scoreJob(job, resumeProfile, companyPreferences = {}) {
   const matchedSkills = resumeSkills.filter(skill => {
     // Exact match in job skills array (must be exact or substring of multi-word skill, not partial word)
     if (jobSkills.some(js => js === skill || js === skill.replace('.', '') || skill === js.replace('.', ''))) return true;
-    // Word-boundary match in description/title (avoid "java" matching "javascript")
+    // Word-boundary match in description/title (avoid "node" matching "node.js")
     try {
       const escaped = skill.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp('(?:^|[\\s,;|/()\\[\\]])' + escaped + '(?:$|[\\s,;|/()\\[\\]])', 'i');

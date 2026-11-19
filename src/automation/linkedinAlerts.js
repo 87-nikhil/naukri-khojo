@@ -5,7 +5,7 @@ const store = require('./store');
 // Nothing here contacts LinkedIn: links in these emails are account-tracking links and are never opened.
 // Only the plain text (title, company, location, job id) is read.
 const SENDERS = ['jobalerts-noreply@linkedin.com', 'jobs-noreply@linkedin.com'];
-const EXTRA_LINE = /connections?$|actively hiring|actively recruiting|easy apply|reviewing applicants|responds|apply with resume|early applicant|promoted|alumni|school|^applied on|^view job|^<|^https?:\/\/|\[url\]|^(?:remote|api|aws|java|backend|kotlin|spring)[\w ]* jobs$|jobs in /i;
+const EXTRA_LINE = /connections?$|actively hiring|actively recruiting|easy apply|reviewing applicants|responds|apply with resume|early applicant|promoted|alumni|school|^applied on|^view job|^<|^https?:\/\/|\[url\]|^(?:remote|api|aws|node|next\.?js|angular|react)[\w ]* jobs$|jobs in /i;
 const SUFFIX = /\b(?:private|pvt|limited|ltd|inc|llc|plc|corp|corporation|technologies|technology|tech|systems|software|solutions|services|consulting|global|india|group|labs|co)\b\.?/g;
 
 function companyKey(name) { return String(name || '').toLowerCase().replace(/\(.*?\)/g, '').replace(SUFFIX, '').replace(/[^a-z0-9]/g, ''); }

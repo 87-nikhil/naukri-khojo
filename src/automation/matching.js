@@ -60,7 +60,7 @@ function evaluate(job, profile) {
   if (ageDays(job) > MAX_AGE_DAYS) blocked.push('Posted more than a week ago');
   if (/train(?:ing)? (?:ai|llm|foundation(?:al)?) models?|ai (?:training|tutor)|rlhf|data annotation|\$\d+\s*\/\s*h(?:ou)?r/i.test(`${title} ${(job.description || '').slice(0, 3000)}`)) blocked.push('AI-training gig, not a full-time role');
   if (/intern\b|internship|\bcontract\b|freelance|temporary|part.time/.test(`${title} ${job.employmentType || ''}`.toLowerCase())) blocked.push('Not a full-time role');
-  if (/\b(qa|sdet|test engineer|in test|testing|support engineer|frontend|front.end|ui|ux|react|angular|ios|android|mobile|golang|c\+\+|data engineer|data scientist|data analyst|devops|site reliability|sales|recruiter)\b/.test(title)) blocked.push('Outside backend role preferences');
+  if (/\b(qa|sdet|test engineer|in test|testing|support engineer|frontend|front.end|ui|ux|ios|android|mobile|golang|c\+\+|data engineer|data scientist|data analyst|devops|site reliability|sales|recruiter)\b/.test(title)) blocked.push('Outside backend role preferences');
   if (!/engineer|developer|\bsde\b|software|backend|back.end/.test(title)) blocked.push('Not a backend engineering title');
   if (/account|marketing|recruit|human resources|\bhr\b|customer|finance analyst|business analyst|sales|people|rewards|payable|procurement/.test(title)) blocked.push('Outside your backend engineering domain');
   if (/principal|\barchitect\b|engineering manager|manager.*software|software.*manager|director|head of|graduate|fresher|junior|software engineer i\b/.test(title)) blocked.push('Outside agreed seniority');
@@ -76,13 +76,13 @@ function evaluate(job, profile) {
   const minimums = experiencePatterns.flatMap(pattern => [...desc.matchAll(pattern)].map(m => Number(m[1])));
   if (minimums.some(n => n > profile.experienceYears)) blocked.push('Experience requirement exceeds profile');
   let score = 0;
-  const keywords = [ ['java', 12], ['kotlin', 10], ['spring', 15], ['kafka', 10], ['microservices', 8], ['mongodb', 6], ['redis', 4], ['node.js', 6], ['nodejs', 6], ['gcp', 5], ['google cloud', 5], ['kubernetes', 4], ['inventory', 5], ['logistics', 5], ['commerce', 5] ];
+  const keywords = [ ['microservices', 8], ['mongodb', 6], ['redis', 4], ['node.js', 6], ['nodejs', 6], ['gcp', 5], ['google cloud', 5], ['kubernetes', 4], ['inventory', 5], ['logistics', 5], ['commerce', 5], ['angular', 6], ['react', 5], ['vue', 5], ['javascript', 5], ['typescript', 5] ];
   for (const [term, points] of keywords) if (new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(`${title} ${desc}`)) { score += points; reasons.push(term); }
-  const coreStack = reasons.some(r => ['java', 'kotlin', 'spring', 'node.js', 'nodejs'].includes(r));
-  if (/backend|back.end|java|spring|kotlin/.test(title)) score += 20;
+  const coreStack = reasons.some(r => ['node.js', 'nodejs', 'angular', 'react', 'vue', 'javascript', 'typescript'].includes(r));
+  if (/backend|back.end|node|next\.?js|angular|react/.test(title)) score += 20;
   if (/senior|\bii\b|\b2\b|lead/.test(title)) score += 10;
-  const pythonOnly = /python/.test(title) && !/java|kotlin|node|spring/.test(title);
-  if (!coreStack && !pythonOnly) blocked.push('No confirmed Java/Kotlin/Spring Boot/Node.js requirement');
+  const pythonOnly = /python/.test(title) && !/node|typescript|javascript|next\.?js/.test(title);
+  if (!coreStack && !pythonOnly) blocked.push('No confirmed Python/Node.js/Next.js requirement');
   if (/\b(?:full.?stack|fullstack|angular|react|ai engineer|machine learning|ml engineer|analytics portal|sterling developer)\b/.test(title)) blocked.push('Full-stack role needs your review; automatic applications target backend roles');
   if (pythonOnly) reasons.push('Python allocation: at most 1 per 100 applications');
   if (score < 25 && !pythonOnly) blocked.push('Insufficient evidence of stack match');

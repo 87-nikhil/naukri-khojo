@@ -10,8 +10,8 @@ const axiosConfig = {
 };
 
 const SKILL_KEYWORDS = [
-  'javascript', 'typescript', 'python', 'java', 'kotlin', 'go', 'rust', 'c++', 'c#', 'php', 'ruby', 'swift',
-  'node.js', 'nodejs', 'express', 'nestjs', 'spring boot', 'django', 'fastapi', 'flask', 'ktor', 'graphql', 'rest api', 'grpc',
+  'javascript', 'typescript', 'python', 'go', 'rust', 'c++', 'c#', 'php', 'ruby', 'swift',
+  'node.js', 'nodejs', 'express', 'nestjs', 'django', 'fastapi', 'flask', 'ktor', 'graphql', 'rest api', 'grpc',
   'react', 'angular', 'vue', 'next.js', 'nextjs', 'redux', 'html', 'css', 'tailwind',
   'mongodb', 'mysql', 'postgresql', 'redis', 'elasticsearch', 'cassandra', 'dynamodb', 'firebase',
   'docker', 'kubernetes', 'aws', 'gcp', 'azure', 'terraform', 'jenkins', 'ci/cd', 'github actions',

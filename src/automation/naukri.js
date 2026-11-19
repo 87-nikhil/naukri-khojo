@@ -20,7 +20,7 @@ async function discover(profile, onProgress = store.event, { limit = 200 } = {})
     if (/nlogin|login/i.test(page.url())) { onProgress('Naukri: login required'); return jobs; }
     // Freshest first (posted in the last day, then 3 days, then 7) so applications land early, when recruiters still read them.
     // Three keywords over 1-3 day postings kept returning the same few jobs, so the search covers wider terms and a 7-day page.
-    const KEYWORDS = profile.searchKeywords?.length ? profile.searchKeywords : ['java backend developer', 'java spring boot developer', 'senior java developer', 'java microservices developer', 'java developer', 'backend engineer java'];
+    const KEYWORDS = profile.searchKeywords?.length ? profile.searchKeywords : ['node backend developer', 'next.js developer', 'senior node developer', 'node microservices developer', 'node developer', 'backend engineer node'];
     for (const city of profile.cities) for (const keywords of KEYWORDS) for (const pageNo of [1, 2, 3]) {
       if (jobs.length >= limit) break;
       const slug = `${keywords.replace(/\s+/g, '-')}-jobs-in-${SLUG[city] || city.toLowerCase()}${pageNo > 1 ? `-${pageNo}` : ''}`;
@@ -39,7 +39,7 @@ async function discover(profile, onProgress = store.event, { limit = 200 } = {})
         // Naukri lists a refreshed posting as new while the stored copy keeps its first date; carry the newer date over.
         if (known.has(card.id)) { const at = postedFrom(card.posted); if (at) refreshed.set(card.id, at); continue; }
         if (jobs.length >= limit) continue; known.add(card.id);
-        if (!/java|backend|back.end|spring|kotlin/i.test(card.title || '')) continue;
+        if (!/node|backend|back.end|next\.?js|angular|react/i.test(card.title || '')) continue;
         // The job page loads its details as JSON; for "Apply on company site" jobs that JSON carries the employer's link,
         // so it is read here instead of clicking the button (Naukri records that click as an application).
         let external = '';

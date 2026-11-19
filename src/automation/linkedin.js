@@ -62,7 +62,7 @@ async function discover(profile, onProgress = store.event) {
   const jobs = [], seen = new Set(store.state().jobs.map(j => (/^linkedin:(\d+)$/.exec(j.requisitionId || '') || /linkedin\.com\/jobs\/view\/(\d+)/.exec(j.sourceDetail || '') || [])[1]).filter(Boolean)); let page;
   try {
     page = await browser.open('https://www.linkedin.com/jobs/');
-    for (const city of [...profile.cities, 'India']) for (const keywords of ['Java Backend', 'Java Developer', 'Spring Boot', 'Backend Engineer Java']) for (const start of [0, 25]) {
+    for (const city of [...profile.cities, 'India']) for (const keywords of ['Node.js Backend', 'Node.js Developer', 'Next.js Developer', 'Backend Engineer Node']) for (const start of [0, 25]) {
       const url = new URL('https://www.linkedin.com/jobs/search/');
       url.searchParams.set('keywords', keywords); if (start) url.searchParams.set('start', String(start)); url.searchParams.set('location', city === 'Gurgaon' ? 'Gurugram, India' : `${city}${city === 'India' ? '' : ', India'}`); 
       if (city === 'India') url.searchParams.set('f_WT', '2');
@@ -86,7 +86,7 @@ async function discover(profile, onProgress = store.event) {
         // Any employer qualifies; the profile's role, location, seniority and pay rules decide eligibility.
         const company = companyFor(card.company) || (card.company.trim() && { name: card.company.trim(), category: 'unlisted', categorySource: '' });
         if (!company || profile.excludedCompanies.some(c => c.toLowerCase() === card.company.toLowerCase())) continue;
-        if (!/java|backend|back.end|kotlin|spring|node|software.*engineer|developer/i.test(card.title)) continue;
+        if (!/node|backend|back.end|next\.?js|angular|react|software.*engineer|developer/i.test(card.title)) continue;
         try {
           const detail = await posting(page, card);
           if (detail.company.toLowerCase() !== company.name.toLowerCase() || detail.description.length < 200) continue;

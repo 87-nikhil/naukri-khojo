@@ -5,9 +5,9 @@ const { Resume } = require('../models');
 // ── Skill Keywords Bank ───────────────────────────────────────────────────────
 const SKILL_KEYWORDS = [
   // Languages
-  'javascript', 'typescript', 'python', 'java', 'kotlin', 'go', 'rust', 'c++', 'c#', 'php', 'ruby', 'swift',
+  'javascript', 'typescript', 'python', 'go', 'rust', 'c++', 'c#', 'php', 'ruby', 'swift',
   // Backend
-  'node.js', 'nodejs', 'express', 'nestjs', 'spring boot', 'django', 'fastapi', 'flask', 'ktor', 'graphql', 'rest api', 'grpc',
+  'node.js', 'nodejs', 'express', 'nestjs', 'django', 'fastapi', 'flask', 'ktor', 'graphql', 'rest api', 'grpc',
   // Frontend
   'react', 'angular', 'vue', 'next.js', 'nextjs', 'redux', 'html', 'css', 'tailwind',
   // Databases
@@ -183,7 +183,7 @@ function extractFallbackRoles(text) {
     { keywords: ['project manager', 'pmp', 'project management', 'milestones'], role: 'project manager' },
     { keywords: ['devops', 'terraform', 'kubernetes', 'ci/cd', 'infrastructure'], role: 'devops engineer' },
     { keywords: ['frontend', 'react', 'angular', 'vue', 'css'], role: 'frontend developer' },
-    { keywords: ['backend', 'node.js', 'django', 'spring', 'api'], role: 'backend engineer' },
+    { keywords: ['backend', 'node.js', 'django', 'next.js', 'api'], role: 'backend engineer' },
     { keywords: ['mobile', 'android', 'ios', 'flutter', 'react native'], role: 'mobile developer' },
   ];
 

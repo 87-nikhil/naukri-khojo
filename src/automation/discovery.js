@@ -39,7 +39,7 @@ async function fetchBoard(company, connector) {
     const base = `https://${host}/wday/cxs/${tenant}/${site}`;
     const jobs = [];
     for (let offset = 0; offset < 200; offset += 20) {
-      const { data } = await http.post(`${base}/jobs`, { appliedFacets: {}, limit: 20, offset, searchText: 'Java' });
+      const { data } = await http.post(`${base}/jobs`, { appliedFacets: {}, limit: 20, offset, searchText: 'Node.js' });
       for (const j of data.jobPostings || []) {
         const location = j.locationsText || '';
         if (!cityPattern(true).test(location)) continue;
@@ -89,7 +89,7 @@ async function fetchBoard(company, connector) {
       if ((data.content || []).length < 100) break;
     }
     const profile = store.read('profile', { cities: [] });
-    const relevant = jobs.filter(j => /java\b|kotlin|spring|node\.?js|backend|back.end/i.test(j.title) && cityPattern(false).test(j.location) && !/principal|architect/i.test(j.title));
+    const relevant = jobs.filter(j => /next\.?js|angular|react|node\.?js|backend|back.end/i.test(j.title) && cityPattern(false).test(j.location) && !/principal|architect/i.test(j.title));
     for (const job of relevant.slice(0, 80)) {
       try {
         const { data } = await http.get(job.detailUrl);
@@ -141,7 +141,7 @@ async function discoverCompany(company) {
     $('a[href]').each((_, el) => {
       try {
         const link = new URL($(el).attr('href'), company.careersUrl);
-        if (link.hostname === new URL(company.careersUrl).hostname && /\/(?:job-details|vacancy|jobview|jobs?\/[^/]+\/[^/]+)/i.test(link.pathname) && /java|backend|spring|kotlin|node|software engineer/i.test($(el).text())) detailLinks.push(link.href);
+        if (link.hostname === new URL(company.careersUrl).hostname && /\/(?:job-details|vacancy|jobview|jobs?\/[^/]+\/[^/]+)/i.test(link.pathname) && /next\.?js|angular|react|node|software engineer/i.test($(el).text())) detailLinks.push(link.href);
       } catch {}
     });
     for (const link of [...new Set(detailLinks)].slice(0, 8)) {
