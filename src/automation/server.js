@@ -461,6 +461,10 @@ app.post('/api/cold-email/contacts/import', async (req, res, next) => {
   try { await userData.withContactMutationLock(req.portalAccount.userId, async leaseToken => { await userData.loadContacts(req.portalAccount.userId); const result = require('./coldEmail').importContacts(req.body.contacts, req.body.sourceFile, req.body.duplicateCount); await userData.saveContacts(req.portalAccount.userId, store.read('company-contacts', []), { leaseToken }); res.json({ ok: true, ...result }); }); }
   catch (error) { next(error); }
 });
+app.post('/api/cold-email/contacts/manual', async (req, res, next) => {
+  try { await userData.withContactMutationLock(req.portalAccount.userId, async leaseToken => { await userData.loadContacts(req.portalAccount.userId); const result = require('./coldEmail').addContact(req.body.email, req.body.name, req.body.company); await userData.saveContacts(req.portalAccount.userId, store.read('company-contacts', []), { leaseToken }); res.json({ ok: true, contact: result }); }); }
+  catch (error) { next(error); }
+});
 app.patch('/api/cold-email/contacts/:id', async (req, res, next) => {
   try { await userData.withContactMutationLock(req.portalAccount.userId, async leaseToken => { await userData.loadContacts(req.portalAccount.userId); const contact = require('./coldEmail').updateContact(req.params.id, req.body); if (!contact) return res.sendStatus(404); await userData.saveContacts(req.portalAccount.userId, store.read('company-contacts', []), { leaseToken }); res.json({ ok: true, contact }); }); }
   catch (error) { next(error); }

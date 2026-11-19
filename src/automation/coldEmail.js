@@ -145,6 +145,25 @@ function importContacts(input, sourceFile, sourceDuplicates = 0) {
   return { created, updated, duplicates, invalid, total: contacts.length };
 }
 
+function addContact(email, name = '', company = '') {
+  const contacts = readContacts(), normalized = String(email || '').trim().toLowerCase();
+  if (!validEmail(normalized)) throw new Error('Invalid email address.');
+  let contact = contacts.find(item => item.emailNormalized === normalized);
+  if (!contact) {
+    contact = { id: crypto.randomUUID(), email: normalized, emailNormalized: normalized, name: String(name || '').trim().slice(0, 160), companies: Array.isArray(company) ? company.slice(0, 20).map(value => String(value).trim().slice(0, 160)).filter(Boolean) : [String(company || '').trim().slice(0, 160)].filter(Boolean), sourceFiles: [], firstImportedAt: new Date().toISOString(), lastImportedAt: new Date().toISOString(), importCount: 0, status: 'active' };
+    contacts.push(contact);
+  } else {
+    if (contact.name === '' && String(name || '').trim()) contact.name = String(name || '').trim().slice(0, 160);
+    if (contact.companies.length < 20) {
+      const newCompanies = [String(company || '').trim().slice(0, 160)].filter(Boolean);
+      for (const c of newCompanies) if (!contact.companies.some(existing => existing.toLowerCase() === c.toLowerCase())) contact.companies.push(c);
+    }
+  }
+  contact.updatedAt = new Date().toISOString();
+  store.write('company-contacts', contacts);
+  return contact;
+}
+
 function updateContact(id, changes = {}) {
   const contacts = readContacts(), contact = contacts.find(item => item.id === id);
   if (!contact) return null;
@@ -355,4 +374,4 @@ function cleanup() {
   for (const [id, campaign] of campaigns) if (campaign.finishedAt && Date.parse(campaign.finishedAt) < expiry) campaigns.delete(id);
 }
 
-module.exports = { extractContacts, listContacts, importContacts, updateContact, deleteContact, startCampaign, status, recoverStaleCampaigns, cleanup, MAX_RECIPIENTS };
+module.exports = { extractContacts, listContacts, importContacts, updateContact, deleteContact, startCampaign, status, recoverStaleCampaigns, cleanup, MAX_RECIPIENTS, addContact };
